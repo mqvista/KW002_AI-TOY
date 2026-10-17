@@ -68,6 +68,7 @@ static volatile APP_STATE_E sg_state = ST_BOOT;
 static XZ_OTA_INFO_T sg_ota;
 static char sg_session_id[64] = {0};
 static BOOL_T sg_tts_stopped = FALSE;
+static BOOL_T sg_listen_started = FALSE; /* realtime: listen start sent for this session */
 static SYS_TIME_T sg_state_since = 0;
 static char sg_auth[192];
 
@@ -328,7 +329,16 @@ static void __send_json(const char *fmt, ...)
 static void __start_listening(void)
 {
     sg_tts_stopped = FALSE;
+#if XZ_LISTEN_REALTIME
+    /* realtime: one listen start per session, the mic then streams continuously */
+    if (!sg_listen_started) {
+        __send_json("{\"session_id\":\"%s\",\"type\":\"listen\",\"state\":\"start\",\"mode\":\"realtime\"}",
+                    sg_session_id);
+        sg_listen_started = TRUE;
+    }
+#else
     __send_json("{\"session_id\":\"%s\",\"type\":\"listen\",\"state\":\"start\",\"mode\":\"auto\"}", sg_session_id);
+#endif
     xz_audio_capture(TRUE, __mic_send_cb);
     __set_state(ST_LISTENING);
 }
@@ -338,6 +348,7 @@ static void __close_channel(void)
     xz_audio_capture(FALSE, NULL);
     xz_ws_close();
     sg_session_id[0] = '\0';
+    sg_listen_started = FALSE;
     __set_state(ST_IDLE);
 }
 
@@ -393,6 +404,13 @@ static void __handle_server_json(const char *text)
     } else if (strcmp(t, "stt") == 0) {
         cJSON *txt = cJSON_GetObjectItem(root, "text");
         PR_NOTICE("[user] %s", cJSON_IsString(txt) ? txt->valuestring : "");
+        if (sg_state == ST_SPEAKING) {
+            /* realtime barge-in: the user talked over the reply, drop what is still
+             * buffered of the old answer; the new answer arrives with its own tts start */
+            PR_NOTICE("barge-in, old reply dropped");
+            xz_audio_stop_playback();
+            __set_state(ST_LISTENING);
+        }
         sg_state_since = tal_system_get_millisecond();
     } else if (strcmp(t, "llm") == 0) {
         cJSON *emo = cJSON_GetObjectItem(root, "emotion");
@@ -401,7 +419,9 @@ static void __handle_server_json(const char *text)
         cJSON *st = cJSON_GetObjectItem(root, "state");
         const char *s = cJSON_IsString(st) ? st->valuestring : "";
         if (strcmp(s, "start") == 0) {
-            xz_audio_capture(FALSE, NULL);
+#if !XZ_LISTEN_REALTIME
+            xz_audio_capture(FALSE, NULL); /* auto mode: mic off while the reply plays */
+#endif
             sg_tts_stopped = FALSE;
             __set_state(ST_SPEAKING);
         } else if (strcmp(s, "sentence_start") == 0) {
@@ -458,7 +478,7 @@ static void __periodic(void)
         break;
     case ST_SPEAKING:
         if (sg_tts_stopped && !xz_audio_is_playing()) {
-            __start_listening(); /* auto mode: keep the conversation going */
+            __start_listening(); /* keep the conversation going */
         }
         break;
     case ST_LISTENING:

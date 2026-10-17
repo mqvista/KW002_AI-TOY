@@ -17,6 +17,12 @@
 #define XZ_CHIP_MODEL        "bk7258"
 #define XZ_PROTOCOL_VERSION  1
 
+/* ---- conversation ---- */
+/* 1: "realtime" listening - the mic keeps streaming while the reply plays (device AEC
+ *    removes the speaker), so the user can interrupt by just talking.
+ * 0: "auto" listening - the mic is off while the reply plays. */
+#define XZ_LISTEN_REALTIME   1
+
 /* ---- audio ---- */
 #define XZ_SAMPLE_RATE       16000
 #define XZ_OPUS_FRAME_MS     60
