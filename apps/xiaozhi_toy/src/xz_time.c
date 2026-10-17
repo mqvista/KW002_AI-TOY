@@ -25,6 +25,22 @@ extern int bk_rtc_settimeofday(const struct timeval *tv, const struct timezone *
 
 static const char *sg_ntp_servers[] = {"ntp.aliyun.com", "ntp.tencent.com", "cn.pool.ntp.org", "pool.ntp.org"};
 
+/*
+ * newlib time() on this platform has no gettimeofday backend and always returns -1,
+ * so mbedtls sees 1969 and rejects every certificate (handshake error -0x1c). Provide
+ * time() here, backed by TuyaOpen's tal_time (set by xz_time_set_ms). Being defined in
+ * an object file it wins over the libc archive member for the whole image.
+ */
+time_t time(time_t *t)
+{
+    time_t now = (time_t)tal_time_get_posix();
+
+    if (t) {
+        *t = now;
+    }
+    return now;
+}
+
 void xz_time_set_ms(int64_t unix_ms)
 {
     struct timeval tv = {.tv_sec = (time_t)(unix_ms / 1000), .tv_usec = (suseconds_t)((unix_ms % 1000) * 1000)};

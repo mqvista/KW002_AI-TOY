@@ -15,6 +15,7 @@
 #include "tkl_output.h"
 #include "cJSON.h"
 #include "tdl_button_manage.h"
+#include "tuya_tls.h"
 #if defined(ENABLE_LIBLWIP) && (ENABLE_LIBLWIP == 1)
 #include "lwip_init.h"
 #endif
@@ -497,6 +498,10 @@ static void __app_main(void)
 
     tal_sw_timer_init();
     tal_workq_init();
+    tal_time_service_init(); /* wall clock used by time() / TLS, see xz_time.c */
+    /* mbedtls threading hooks + DRBG; normally done by tuya_iot_init, without it every
+     * handshake fails with MBEDTLS_ERR_THREADING_BAD_INPUT_DATA (-0x1c) */
+    TUYA_CALL_ERR_LOG(tuya_tls_init());
     TUYA_CALL_ERR_LOG(tal_queue_create_init(&sg_ev_queue, sizeof(APP_EV_T), 16));
     TUYA_CALL_ERR_LOG(xz_settings_init());
 #if defined(ENABLE_LIBLWIP) && (ENABLE_LIBLWIP == 1)

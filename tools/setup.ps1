@@ -90,4 +90,19 @@ if (Test-Path $PlatformScript) {
     Write-Host '[setup] T5AI platform not downloaded yet: run `tos.py build` once, then re-run this script.'
 }
 
+# 6. T5AI platform patch: the SoftAP DHCP server starts a DNS responder that answers
+#    every query with REFUSED on the AP interface. Phones then never see the captive
+#    portal; the application runs its own captive DNS (apps/xiaozhi_toy xz_dns.c).
+$DhcpMain = Join-Path $Sdk 'platform\T5AI\t5_os\ap\components\lwip_intf_v2_1\dhcpd\dhcp-server-main.c'
+if (Test-Path $DhcpMain) {
+    $c = [IO.File]::ReadAllText($DhcpMain)
+    $orig = "`tdhcp_enable_nack_dns_server();"
+    $patched = "`t/* KW002: captive DNS is served by the application */ /* dhcp_enable_nack_dns_server(); */"
+    if (-not $c.Contains($patched)) {
+        if (-not $c.Contains($orig)) { throw "nack DNS call not found in $DhcpMain, platform layout changed?" }
+        [IO.File]::WriteAllText($DhcpMain, $c.Replace($orig, $patched))
+        Write-Host "[setup] Patched $DhcpMain (no REFUSED DNS responder on the SoftAP)"
+    }
+}
+
 Write-Host '[setup] Done. TuyaOpen\boards\T5AI\Kconfig is modified locally on purpose (not committed).'

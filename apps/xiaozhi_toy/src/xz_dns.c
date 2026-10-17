@@ -82,7 +82,8 @@ static void __dns_task(void *arg)
         goto __EXIT;
     }
     tal_net_set_reuse(fd);
-    if (tal_net_bind(fd, TY_IPADDR_ANY, DNS_PORT) < 0) {
+    /* bind the AP address: lwIP prefers a specific local IP over a catch-all socket */
+    if (tal_net_bind(fd, sg_ap_addr, DNS_PORT) < 0) {
         PR_ERR("dns bind failed %d", tal_net_get_errno());
         tal_net_close(fd);
         goto __EXIT;
