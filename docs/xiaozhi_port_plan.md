@@ -179,7 +179,16 @@ TDD_AUDIO_T5AI_T cfg = {
 - [x] **回答中侦听麦克风、语音插话**（`XZ_LISTEN_REALTIME=1`，2026-10-18 真机通过）：会话开始发一次 `listen start(mode=realtime)`，麦克风全程上传，T5 硬件 AEC 去除喇叭回声，服务器检测到用户开口即停止当前 TTS。实测：讲故事中途说“换一个故事”“我不要小男孩，我要小女孩”都被正确打断并改答；100% 音量下未出现被自身回声误打断
   - 播放中收到新的 `stt` 时清空本地缓冲的旧回答（实测服务器通常先发 `tts stop`，此逻辑作为兜底）
   - 不能在 `tts start` 时清空缓冲：JSON 经主线程队列处理，语音包直接送播放，会误删新回答开头
-- [ ] 唤醒词「你好小智」（TuyaOpen KWS），待机时免按键唤醒
+- [x] **唤醒词「小智同学」**（`xz_wake.c`，2026-10-18 真机通过）：**平台模型里没有「你好小智」**，见下文「唤醒词调研」。实测：待机说「小智同学」→ 同一秒建链 → 服务器回「哎，我在呢～怎么啦？」，唤醒到出声约 1 s；说「退一下吧」服务器主动关闭会话 → 回到待机后可再次唤醒
+
+#### 唤醒词调研（2026-10-18）
+- T5AI 平台的 KWS 是 `tkl_kws.c` + 预编译库 `libtutuClear_wakeup_nihaotuya_xiaozhitongxue_heytuya_hituya_20251024_small_model.a`（Spectimbre TUTUClear 2.8.0），平台 CMake 已无条件链接。启动日志：`WAKEUP_info:nihaotuya-xiaozhitongxue-heytuya-hituya--200KB--20250804`，PSRAM 占用 18808 字节。
+- 模型只认 4 个词：`你好涂鸦`(1)、`小智同学`(2)、`hey tuya`(3)、`hi tuya`(4)。头文件枚举里有 `TKL_KWS_WAKEUP_NIHAO_XIAOZHI`，但模型里没有，**无法用「你好小智」**（换词需要涂鸦/思必驰定制模型，或换别的 KWS 引擎）。
+- 喂数据：TuyaOpen 的 `ai_components` 通过 `tkl_vad.c` 在 AEC 线程里挂 speex AES + RNN VAD，再调用 `tkl_kws_feed_with_vad()`（只在 VAD 判为语音时送检）。本应用已从 T5 音频驱动拿到 AEC 后的 16 kHz 帧，因此不挂那条链路，而是在麦克风回调里直接 `tkl_kws_feed_with_vad(pcm, len, 1)`（VAD 恒为 1，每 100 ms 唤醒一次 `kws_task` 检测）。`tkl_kws_feed_with_vad` 未在公开头文件声明，需 `extern`。
+- 只在 **idle 且喇叭不出声** 时开启检测（离开 idle 立即关；idle 时由 `__periodic` 按 `!xz_audio_is_playing()` 开启，避免会话被服务器关闭后告别语还在播时自唤醒）：对话中 realtime 模式本来就能直接说话插话。`tkl_kws_disable/enable` 会清空环形缓冲，旧音频不会延迟触发。
+- 模型对另外 3 个词有误报：实测待机时普通说话两次报出 `heytuya`(3)、`hituya`(4)，已在回调里只接受 `小智同学`(2)，其余仅打 DEBUG 日志。
+- 唤醒流程（参照 xiaozhi-esp32 `HandleWakeWordDetectedEvent`，其 `CONFIG_SEND_WAKE_WORD_DATA` 默认 y）：播放 `popup` 提示音 → 建立 WebSocket → 收到 `hello` 后先发 `{"type":"listen","state":"detect","text":"小智同学"}`（服务器据此回一句问候）→ 再发 `listen start (realtime)`。未上传唤醒词音频本身（ESP32 用于声纹，此处不需要）。`XZ_WAKE_SEND_DETECT=0` 时只响提示音直接聆听。
+- 平台代码小问题（未改）：`__kws_detect()` 内层查表循环复用了外层变量 `i`，命中未知 ID 时会跳过后续帧，对已知 4 个词无影响。
 - [ ] LED：低电慢闪 / 充电指示
 - [ ] 提示音：断网、低电（`low_battery.ogg` 已嵌入）
 - [ ] MCP 工具：音量调节、电量查询（`self.audio_speaker.set_volume`、`self.get_battery` 等）
@@ -202,7 +211,7 @@ TDD_AUDIO_T5AI_T cfg = {
 |---|---|
 | 服务器 | **官方 xiaozhi.me**（OTA 激活 v1，设备语音播报 6 位激活码，在控制台绑定） |
 | 配网 | **SoftAP 网页配网**（长按 P12 进入；热点 + 网页填写 Wi-Fi），不依赖涂鸦云 |
-| 对话方式 | **唤醒词「你好小智」+ P33 按键 + AEC 自由对话**，播报中可打断 |
+| 对话方式 | **唤醒词 + P33 按键 + AEC 自由对话**，播报中可打断。唤醒词原定「你好小智」，平台离线模型不含该词，改为「小智同学」（2026-10-18） |
 | 工程位置 | **本地 `D:\tuya-T5`** = 仓库 [mqvista/KW002_AI-TOY](https://github.com/mqvista/KW002_AI-TOY)（公开），TuyaOpen 为子模块；板级 `boards/KW002_T5AI`、应用 `apps/xiaozhi_toy`。原定放在 Z:（NAS），但 `export.ps1` 在网络盘上失败（uv 无法创建目录链接，os error 4390），改到本地盘 |
 
 ## 5. 风险

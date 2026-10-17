@@ -22,6 +22,12 @@ OPERATE_RET xz_audio_init(void);
 /** Start/stop streaming the microphone as Opus packets to cb. */
 void xz_audio_capture(BOOL_T on, XZ_AUDIO_SEND_CB cb);
 
+/** Called from the audio driver with every mic frame (16 kHz mono 16 bit PCM after AEC). */
+typedef void (*XZ_AUDIO_TAP_CB)(const uint8_t *pcm, uint32_t len);
+
+/** Install a raw PCM tap, independent of capture (used by the wake word). */
+void xz_audio_set_mic_tap(XZ_AUDIO_TAP_CB cb);
+
 /* ---- playback ---- */
 /** Queue an Opus packet from the server (any sample rate, decoded to 16 kHz). */
 void xz_audio_feed_opus(const uint8_t *data, uint32_t len);

@@ -46,6 +46,7 @@ static TDL_AUDIO_HANDLE_T sg_audio = NULL;
 static QUEUE_HANDLE sg_mic_queue = NULL;
 static volatile BOOL_T sg_capture_on = FALSE;
 static XZ_AUDIO_SEND_CB sg_send_cb = NULL;
+static XZ_AUDIO_TAP_CB sg_mic_tap = NULL;
 static OpusEncoder *sg_encoder = NULL;
 
 static QUEUE_HANDLE sg_play_queue = NULL;
@@ -65,6 +66,9 @@ static void __mic_cb(TDL_AUDIO_FRAME_FORMAT_E type, TDL_AUDIO_STATUS_E status, u
 {
     (void)type;
     (void)status;
+    if (sg_mic_tap) {
+        sg_mic_tap(data, len);
+    }
     if (!sg_capture_on) {
         return;
     }
@@ -292,6 +296,11 @@ void xz_audio_capture(BOOL_T on, XZ_AUDIO_SEND_CB cb)
         sg_send_cb = cb;
     }
     sg_capture_on = on;
+}
+
+void xz_audio_set_mic_tap(XZ_AUDIO_TAP_CB cb)
+{
+    sg_mic_tap = cb;
 }
 
 void xz_audio_feed_opus(const uint8_t *data, uint32_t len)

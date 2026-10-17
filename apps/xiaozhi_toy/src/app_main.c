@@ -4,6 +4,7 @@
  *
  * Keys: P33 talk  - press: start chat / interrupt the reply / end chat
  *       P12 reset - hold 3 s: "entering Wi-Fi configuration mode", reboot into the SoftAP portal
+ * Voice: "小智同学" while idle starts a chat (offline wake word, xz_wake.c)
  */
 
 #include <stdarg.h>
@@ -29,6 +30,7 @@
 #include "xz_settings.h"
 #include "xz_time.h"
 #include "xz_ui.h"
+#include "xz_wake.h"
 #include "xz_wifi.h"
 #include "xz_ws.h"
 
@@ -41,6 +43,7 @@ typedef enum {
     EV_WS_TEXT,   /* text: malloc'd JSON, freed by the handler */
     EV_WS_CLOSED,
     EV_WIFI_DOWN,
+    EV_WAKE_WORD,
 } APP_EV_E;
 
 typedef struct {
@@ -69,6 +72,7 @@ static XZ_OTA_INFO_T sg_ota;
 static char sg_session_id[64] = {0};
 static BOOL_T sg_tts_stopped = FALSE;
 static BOOL_T sg_listen_started = FALSE; /* realtime: listen start sent for this session */
+static BOOL_T sg_wake_pending = FALSE;   /* channel opened by the wake word: report it after hello */
 static SYS_TIME_T sg_state_since = 0;
 static char sg_auth[192];
 
@@ -91,6 +95,11 @@ static void __set_state(APP_STATE_E st)
     PR_NOTICE("state %s -> %s", sg_state_name[sg_state], sg_state_name[st]);
     sg_state = st;
     sg_state_since = tal_system_get_millisecond();
+#if XZ_WAKE_ENABLE
+    if (st != ST_IDLE) {
+        xz_wake_enable(FALSE); /* in a conversation anything said goes to the server anyway */
+    }
+#endif
 
     switch (st) {
     case ST_PORTAL:
@@ -134,6 +143,12 @@ static void __reset_key_cb(char *name, TDL_BUTTON_TOUCH_EVENT_E event, void *arg
     if (TDL_BUTTON_LONG_PRESS_START == event) {
         __post_event(EV_KEY_RESET_LONG, NULL);
     }
+}
+
+static void __wake_cb(const char *word)
+{
+    (void)word;
+    __post_event(EV_WAKE_WORD, NULL);
 }
 
 static void __keys_init(void)
@@ -349,6 +364,7 @@ static void __close_channel(void)
     xz_ws_close();
     sg_session_id[0] = '\0';
     sg_listen_started = FALSE;
+    sg_wake_pending = FALSE;
     __set_state(ST_IDLE);
 }
 
@@ -372,6 +388,7 @@ static void __open_channel(void)
     __set_state(ST_OPENING);
     if (OPRT_OK != xz_ws_connect(sg_ota.ws_url, hdr, 4, &cb)) {
         xz_audio_play_sound(XZ_SND_EXCLAMATION, FALSE);
+        sg_wake_pending = FALSE;
         __set_state(ST_IDLE);
         return;
     }
@@ -399,6 +416,14 @@ static void __handle_server_json(const char *text)
         }
         PR_NOTICE("server hello, session %s", sg_session_id);
         if (sg_state == ST_OPENING) {
+#if XZ_WAKE_SEND_DETECT
+            if (sg_wake_pending) {
+                /* like xiaozhi-esp32: the server answers the wake word with a greeting */
+                __send_json("{\"session_id\":\"%s\",\"type\":\"listen\",\"state\":\"detect\",\"text\":\"%s\"}",
+                            sg_session_id, XZ_WAKE_WORD_TEXT);
+            }
+#endif
+            sg_wake_pending = FALSE;
             __start_listening();
         }
     } else if (strcmp(t, "stt") == 0) {
@@ -456,6 +481,17 @@ static void __on_talk_key(void)
     }
 }
 
+static void __on_wake_word(void)
+{
+    if (sg_state != ST_IDLE) {
+        return; /* only armed while idle, a late event may still arrive */
+    }
+    PR_NOTICE("wake word \"%s\"", XZ_WAKE_WORD_TEXT);
+    xz_audio_play_sound(XZ_SND_POPUP, FALSE); /* instant feedback, the connection takes ~1 s */
+    sg_wake_pending = TRUE;
+    __open_channel();
+}
+
 static void __on_wifi_down(void)
 {
     PR_WARN("wifi link down");
@@ -469,6 +505,12 @@ static void __periodic(void)
     SYS_TIME_T now = tal_system_get_millisecond();
 
     switch (sg_state) {
+#if XZ_WAKE_ENABLE
+    case ST_IDLE:
+        /* armed once the speaker is quiet, e.g. after the goodbye of a closed session */
+        xz_wake_enable(!xz_audio_is_playing());
+        break;
+#endif
     case ST_OPENING:
         if (now - sg_state_since > XZ_WS_HELLO_TIMEOUT_MS) {
             PR_ERR("no server hello");
@@ -530,6 +572,11 @@ static void __app_main(void)
     TUYA_CALL_ERR_LOG(board_register_hardware());
     xz_ui_init();
     TUYA_CALL_ERR_LOG(xz_audio_init());
+#if XZ_WAKE_ENABLE
+    if (OPRT_OK == xz_wake_init(__wake_cb)) {
+        xz_audio_set_mic_tap(xz_wake_feed);
+    }
+#endif
     __keys_init();
     TUYA_CALL_ERR_LOG(xz_wifi_init(__wifi_link_cb));
     PR_NOTICE("device %s, uuid %s", xz_wifi_mac_str(), xz_settings_uuid());
@@ -554,7 +601,7 @@ static void __app_main(void)
     /* 3. ready */
     xz_audio_play_sound(XZ_SND_SUCCESS, TRUE);
     __set_state(ST_IDLE);
-    PR_NOTICE("ready: press the talk key to chat");
+    PR_NOTICE("ready: say \"%s\" or press the talk key to chat", XZ_WAKE_WORD_TEXT);
 
     while (1) {
         APP_EV_T ev;
@@ -575,6 +622,9 @@ static void __app_main(void)
                 break;
             case EV_WIFI_DOWN:
                 __on_wifi_down();
+                break;
+            case EV_WAKE_WORD:
+                __on_wake_word();
                 break;
             default:
                 break;

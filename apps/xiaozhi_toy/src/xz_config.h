@@ -23,6 +23,13 @@
  * 0: "auto" listening - the mic is off while the reply plays. */
 #define XZ_LISTEN_REALTIME   1
 
+/* ---- wake word (offline, see xz_wake.c) ---- */
+#define XZ_WAKE_ENABLE       1
+#define XZ_WAKE_WORD_TEXT    "小智同学"
+/* 1: tell the server which word woke the device ("listen detect"), it answers with a greeting.
+ * 0: only play the popup sound and listen. */
+#define XZ_WAKE_SEND_DETECT  1
+
 /* ---- audio ---- */
 #define XZ_SAMPLE_RATE       16000
 #define XZ_OPUS_FRAME_MS     60
