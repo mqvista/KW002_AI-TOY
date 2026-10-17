@@ -75,6 +75,14 @@
 
 > 编译日志中的 `country code error: ...ip-api.com` 是 tos.py 查询所在国家失败，不影响编译。
 
+**串口接线**（TuyaOpen T5AI 平台配置 `CONFIG_UART_PRINT_PORT=1`、460800；引脚来自原厂固件 UART 表）：
+| 用途 | 串口 | 模组引脚 | 波特率 |
+|---|---|---|---|
+| 刷写固件 | UART0 | P11 = TX，P10 = RX | tos.py / tyutool 自动 |
+| 运行日志 | UART1 | P0 = TX，P1 = RX | 460800 |
+
+刷写会覆盖片上原厂固件（`*_QIO_*.bin` 从 0 地址写入 bootloader + 应用）；原厂整片 dump 可以用 tyutool 写回恢复。
+
 ### 阶段 1：新建板级支持 `KW002_T5AI` 并验证硬件
 - [x] 板级代码 `boards/KW002_T5AI/`（`kw002_t5ai.c`、`board_com_api.h`、`Kconfig`、`KW002_T5AI.config`）
 - [x] `tools/setup.ps1`：建目录链接 `TuyaOpen\boards\T5AI\KW002_T5AI` → `boards\KW002_T5AI`，往 `TuyaOpen\boards\T5AI\Kconfig` 插入板级选项，拷贝板级 config，写入子模块 `info/exclude`；可重复执行
