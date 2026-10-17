@@ -33,7 +33,7 @@ extern uint16_t bk_adc_data_calculate(uint16_t adc_val, uint8_t adc_chan);
 #define RECORD_MAX_MS     (5 * 1000)
 #define TONE_MS           1000
 #define STATUS_PERIOD_MS  5000
-#define PLAY_VOLUME       70
+#define PLAY_VOLUME       100
 
 /***********************************************************
 ***********************typedef define***********************
@@ -58,6 +58,11 @@ static TDL_LED_HANDLE_T sg_led_hdl = NULL;
 static TDL_POWER_HANDLE sg_pwr_hdl = NULL;
 #endif
 
+/* mic delivery statistics: is every 20 ms frame arriving? */
+static volatile uint32_t sg_mic_frames = 0;
+static volatile uint32_t sg_mic_bytes = 0;
+static uint32_t sg_rec_t0 = 0;
+
 /* One 1 kHz period at 16 kHz, amplitude ~30 % of full scale. */
 static const int16_t sg_tone_1k[16] = {
     0, 3762, 6951, 9082, 9830, 9082, 6951, 3762, 0, -3762, -6951, -9082, -9830, -9082, -6951, -3762,
@@ -68,6 +73,9 @@ static const int16_t sg_tone_1k[16] = {
 ***********************************************************/
 static void __mic_frame_cb(TDL_AUDIO_FRAME_FORMAT_E type, TDL_AUDIO_STATUS_E status, uint8_t *data, uint32_t len)
 {
+    sg_mic_frames++;
+    sg_mic_bytes += len;
+
     if (REC_RECORDING != sg_rec_status || NULL == sg_rec_rb) {
         return;
     }
@@ -187,7 +195,8 @@ static void __play_record(void)
         return;
     }
 
-    PR_NOTICE("[AUDIO] play back %u bytes (%u ms)", total,
+    PR_NOTICE("[AUDIO] held %u ms, recorded %u bytes (%u ms), play back",
+              (uint32_t)tal_system_get_millisecond() - sg_rec_t0, total,
               total / sg_audio_info.frame_size * sg_audio_info.sample_tm_ms);
     while (tuya_ring_buff_used_size_get(sg_rec_rb) > 0) {
         uint32_t len = tuya_ring_buff_read(sg_rec_rb, frame, sg_audio_info.frame_size);
@@ -333,6 +342,7 @@ static void user_main(void)
         switch (sg_rec_status) {
         case REC_START:
             tuya_ring_buff_reset(sg_rec_rb);
+            sg_rec_t0 = (uint32_t)tal_system_get_millisecond();
             PR_NOTICE("[AUDIO] recording...");
             sg_rec_status = REC_RECORDING;
             break;
@@ -351,6 +361,18 @@ static void user_main(void)
         tal_system_sleep(10);
         idle_ms += 10;
         if (idle_ms >= STATUS_PERIOD_MS) {
+            static uint32_t last_ms = 0, last_frames = 0, last_bytes = 0;
+            uint32_t now = (uint32_t)tal_system_get_millisecond();
+            uint32_t frames = sg_mic_frames, bytes = sg_mic_bytes;
+            if (last_ms) {
+                /* 16 kHz mono 16 bit: expect 50 frames / 32000 bytes per second */
+                uint32_t dt = now - last_ms;
+                PR_NOTICE("[MIC] %u ms: %u frames, %u bytes -> %u bytes/s (expect 32000)", dt, frames - last_frames,
+                          bytes - last_bytes, (bytes - last_bytes) * 1000 / (dt ? dt : 1));
+            }
+            last_ms = now;
+            last_frames = frames;
+            last_bytes = bytes;
             idle_ms = 0;
 #if defined(POWER_NAME)
             __power_report();
