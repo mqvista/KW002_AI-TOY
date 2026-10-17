@@ -176,7 +176,10 @@ TDD_AUDIO_T5AI_T cfg = {
 - [x] 状态机（idle/opening/listening/speaking/offline，`app_main.c`）
 - [x] 激活流程：语音播报 6 位激活码（阶段 2 已完成）
 - [x] 说话时按键打断（`abort`）
-- [ ] 唤醒词「你好小智」（TuyaOpen KWS）+ AEC 自由对话（`realtime` 模式，边播边听）
+- [x] **回答中侦听麦克风、语音插话**（`XZ_LISTEN_REALTIME=1`，2026-10-18 真机通过）：会话开始发一次 `listen start(mode=realtime)`，麦克风全程上传，T5 硬件 AEC 去除喇叭回声，服务器检测到用户开口即停止当前 TTS。实测：讲故事中途说“换一个故事”“我不要小男孩，我要小女孩”都被正确打断并改答；100% 音量下未出现被自身回声误打断
+  - 播放中收到新的 `stt` 时清空本地缓冲的旧回答（实测服务器通常先发 `tts stop`，此逻辑作为兜底）
+  - 不能在 `tts start` 时清空缓冲：JSON 经主线程队列处理，语音包直接送播放，会误删新回答开头
+- [ ] 唤醒词「你好小智」（TuyaOpen KWS），待机时免按键唤醒
 - [ ] LED：低电慢闪 / 充电指示
 - [ ] 提示音：断网、低电（`low_battery.ogg` 已嵌入）
 - [ ] MCP 工具：音量调节、电量查询（`self.audio_speaker.set_volume`、`self.get_battery` 等）
