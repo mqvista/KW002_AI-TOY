@@ -35,6 +35,11 @@ extern uint16_t bk_adc_data_calculate(uint16_t adc_val, uint8_t adc_chan);
 #define STATUS_PERIOD_MS  5000
 #define PLAY_VOLUME       100
 
+/* Automatic playback test: play a tone every period, for count times, and watch the
+ * [MIC] statistics to see whether capture keeps running after playback (0 = off). */
+#define AUTO_TONE_PERIOD_MS 10000
+#define AUTO_TONE_COUNT     0
+
 /***********************************************************
 ***********************typedef define***********************
 ***********************************************************/
@@ -184,6 +189,14 @@ static OPERATE_RET __audio_init(void)
     return rt;
 }
 
+static void __play_finish(uint32_t t_start, uint32_t audio_ms)
+{
+    uint32_t spent = (uint32_t)tal_system_get_millisecond() - t_start;
+
+    /* tdl_audio_play does not block: the platform voice queue takes seconds of audio */
+    PR_NOTICE("[AUDIO] %u ms of audio queued in %u ms", audio_ms, spent);
+}
+
 static void __play_record(void)
 {
     uint32_t total = tuya_ring_buff_used_size_get(sg_rec_rb);
@@ -195,13 +208,15 @@ static void __play_record(void)
         return;
     }
 
-    PR_NOTICE("[AUDIO] held %u ms, recorded %u bytes (%u ms), play back",
-              (uint32_t)tal_system_get_millisecond() - sg_rec_t0, total,
-              total / sg_audio_info.frame_size * sg_audio_info.sample_tm_ms);
+    uint32_t audio_ms = total / sg_audio_info.frame_size * sg_audio_info.sample_tm_ms;
+    uint32_t t_start = (uint32_t)tal_system_get_millisecond();
+
+    PR_NOTICE("[AUDIO] held %u ms, recorded %u bytes (%u ms), play back", t_start - sg_rec_t0, total, audio_ms);
     while (tuya_ring_buff_used_size_get(sg_rec_rb) > 0) {
         uint32_t len = tuya_ring_buff_read(sg_rec_rb, frame, sg_audio_info.frame_size);
         tdl_audio_play(sg_audio_hdl, frame, len);
     }
+    __play_finish(t_start, audio_ms);
 
     tkl_system_psram_free(frame);
 }
@@ -212,6 +227,7 @@ static void __play_tone(void)
     uint32_t frames = TONE_MS / sg_audio_info.sample_tm_ms;
     int16_t *frame = tkl_system_psram_malloc(sg_audio_info.frame_size);
     uint32_t phase = 0;
+    uint32_t t_start = (uint32_t)tal_system_get_millisecond();
 
     if (NULL == frame) {
         PR_ERR("psram malloc failed");
@@ -224,6 +240,7 @@ static void __play_tone(void)
         }
         tdl_audio_play(sg_audio_hdl, (uint8_t *)frame, sg_audio_info.frame_size);
     }
+    __play_finish(t_start, frames * sg_audio_info.sample_tm_ms);
 
     tkl_system_psram_free(frame);
 }
@@ -318,6 +335,8 @@ static void user_main(void)
 {
     OPERATE_RET rt = OPRT_OK;
     uint32_t idle_ms = 0;
+    int auto_left = AUTO_TONE_COUNT;
+    uint32_t auto_last = 0;
 
     tal_log_init(TAL_LOG_LEVEL_DEBUG, 1024, (TAL_LOG_OUTPUT_CB)tkl_log_output);
     PR_NOTICE("==== KW002 hardware self test ====");
@@ -360,6 +379,15 @@ static void user_main(void)
 
         tal_system_sleep(10);
         idle_ms += 10;
+
+        if (auto_left > 0 && REC_IDLE == sg_rec_status &&
+            (uint32_t)tal_system_get_millisecond() - auto_last >= AUTO_TONE_PERIOD_MS) {
+            auto_last = (uint32_t)tal_system_get_millisecond();
+            PR_NOTICE("[AUTO] tone %d/%d", AUTO_TONE_COUNT - auto_left + 1, AUTO_TONE_COUNT);
+            auto_left--;
+            sg_rec_status = REC_TONE;
+        }
+
         if (idle_ms >= STATUS_PERIOD_MS) {
             static uint32_t last_ms = 0, last_frames = 0, last_bytes = 0;
             uint32_t now = (uint32_t)tal_system_get_millisecond();

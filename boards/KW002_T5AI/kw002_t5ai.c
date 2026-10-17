@@ -15,6 +15,14 @@
 #include "tdd_audio.h"
 #include "tdd_led_gpio.h"
 #include "tdd_button_gpio.h"
+#if defined(AUDIO_CODEC_NAME)
+/* T5AI platform (tkl_audio.c): with the vendor VAD enabled inside the AEC pipeline,
+ * the driver stops delivering mic frames after a period of silence once speech has
+ * been seen, and clips the start of the next utterance. Must be called before
+ * tkl_ai_init (i.e. before tdl_audio_open). */
+extern void tkl_ai_disable_vendor_vad(void);
+#endif
+
 #if defined(POWER_NAME)
 #include "tkl_adc.h"
 #include "tdd_power_soc.h"
@@ -82,6 +90,9 @@ static OPERATE_RET __board_register_audio(void)
     cfg.spk_sample_rate  = TKL_AUDIO_SAMPLE_16K;
     cfg.spk_pin          = BOARD_SPEAKER_EN_PIN;
     cfg.spk_pin_polarity = TUYA_GPIO_LEVEL_LOW; /* polarity 0 -> PA driven high while playing */
+
+    /* continuous mic stream: wake word / VAD are done by the application */
+    tkl_ai_disable_vendor_vad();
 
     TUYA_CALL_ERR_RETURN(tdd_audio_register(AUDIO_CODEC_NAME, cfg));
 #endif
