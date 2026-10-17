@@ -2,7 +2,8 @@
  * @file app_main.c
  * @brief KW002 XiaoZhi AI toy: boot flow, Wi-Fi provisioning, activation and conversation state machine.
  *
- * Keys: P33 talk  - press: start chat / interrupt the reply / end chat
+ * Keys: P33 talk  - press: start chat / interrupt the reply / end chat;
+ *                   in the portal: repeat "请用手机连接热点，小智杠 5 C 9 0"
  *       P12 reset - hold 3 s: "entering Wi-Fi configuration mode", reboot into the SoftAP portal
  * Voice: "小智同学" while idle starts a chat (offline wake word, xz_wake.c)
  * MCP:   the server can read volume / battery / Wi-Fi and set the volume (xz_mcp.c)
@@ -208,6 +209,33 @@ static void __enter_portal_by_key(void)
     tal_system_reset();
 }
 
+/* "请用手机连接热点，小智杠" + the SSID suffix spelled out, e.g. "五 C 九 零" */
+static void __announce_ap(void)
+{
+    const char *ssid = xz_portal_ssid();
+
+    PR_NOTICE("announce: connect to \"%s\"", ssid);
+    if (strlen(ssid) <= strlen(XZ_AP_SSID_PREFIX)) {
+        return;
+    }
+    /* wait in between: 20 ms prompt frames, the whole phrase would overflow the play queue */
+    xz_audio_play_sound(XZ_SND_CONNECT_AP, TRUE);
+    for (const char *c = ssid + strlen(XZ_AP_SSID_PREFIX); *c; c++) {
+        int v = -1;
+        if (*c >= '0' && *c <= '9') {
+            v = *c - '0';
+        } else if (*c >= 'A' && *c <= 'F') {
+            v = *c - 'A' + 10;
+        } else if (*c >= 'a' && *c <= 'f') {
+            v = *c - 'a' + 10;
+        }
+        if (v >= 0) {
+            xz_audio_play_sound((XZ_SOUND_E)(XZ_SND_SSID_0 + v), FALSE);
+        }
+    }
+    xz_audio_wait_idle(15000);
+}
+
 static void __run_portal(BOOL_T announce)
 {
     __set_state(ST_PORTAL);
@@ -219,11 +247,16 @@ static void __run_portal(BOOL_T announce)
         tal_system_sleep(2000);
         tal_system_reset();
     }
+    __announce_ap(); /* the AP is up: tell the user which network to join */
+
     /* the portal reboots the device once credentials are saved */
     while (1) {
         APP_EV_T ev;
         if (OPRT_OK == tal_queue_fetch(sg_ev_queue, &ev, 1000)) {
             tal_free(ev.text);
+            if (EV_KEY_TALK == ev.type) {
+                __announce_ap(); /* say it again */
+            }
         }
     }
 }

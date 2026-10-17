@@ -150,8 +150,10 @@ TDD_AUDIO_T5AI_T cfg = {
 ### 阶段 2：配网 + 激活 + 对话闭环（应用 `apps/xiaozhi_toy`）
 用户要求阶段 2 直接做完配网和激活码播报（不再写死 Wi-Fi）。配网入口：**从未配网 → 开机直接播报“进入配网模式”并开启配网；已配网 → 长按 P12 3 s，播报后开启配网**。
 
-- [x] SoftAP 配网（`xz_portal.c`）：开机扫描 Wi-Fi → 热点 `Xiaozhi-<MAC 后 4 位>`（无密码）→ TuyaOpen `http_host`/`http_site`/`http_captive` 网页 + 自研 DNS 劫持（`xz_dns.c`）→ 保存到 KV 后重启；新凭据首次连不上自动回配网
+- [x] SoftAP 配网（`xz_portal.c`）：开机扫描 Wi-Fi → 热点 `Xiaozhi-<MAC 后 4 位>`（无密码）→ TuyaOpen `http_host`/`http_site`/`http_captive` 网页 + DNS 劫持（平台 CP 核 DNS 应答补丁，见下表）→ 保存到 KV 后重启；新凭据首次连不上自动回配网
 - [x] 长按 P12：播报 `wificonfig` → 置 KV 标志 → 重启 → 直接进配网（不重复播报）
+- [x] **播报热点名**（2026-10-18 真机通过）：热点开好后播「请用手机连接热点，小智杠」+ 逐字念 MAC 后缀（如「五 C 九 零」）；配网中按 P33 重播。字符 0-9/A-F 与引导句同用 Huihui 合成（`connect_ap.ogg`、`ssid_*.ogg`），各段先逐个入队、整句后 `wait_idle`（引导句先等播完：20 ms 帧的提示音整句一次性入队会接近播放队列上限 256）
+  - TTS 生成：增益按参考提示音有声段 RMS 对齐，同时限制峰值 ≤ 0.95，单字（原始电平低）不会削波
 - [x] SNTP 对时（`xz_time.c`）+ OTA 返回的 `server_time` 校准
 - [x] OTA 签到 / 激活 v1（`xz_ota.c`）：POST `/xiaozhi/ota/`、`/xiaozhi/ota/activate`，证书校验固定 DigiCert Global Root G2
 - [x] 激活码语音播报：`activation.ogg` + 数字 0~9（xiaozhi-esp32 提示音，MIT，`tools/gen_prompts.py` 嵌入为 C 数组）
@@ -159,7 +161,7 @@ TDD_AUDIO_T5AI_T cfg = {
 - [x] 协议：`hello`（opus 16 kHz/60 ms，不声明 MCP）→ `listen start (auto)` → `stt`/`tts start|sentence_start|stop` → 播完自动继续聆听；说话时按 P33 发 `abort` 打断；聆听时按 P33 结束；30 s 无识别自动关闭
 - [x] 音频（`xz_audio.c`）：麦克风 20 ms 帧 → Opus 60 ms（复杂度 3）上行；TTS/提示音共用解码播放线程（下行 24 kHz 直接解码到 16 kHz）
 - [x] **真机多轮对话通过**（2026-10-18）：“你好。”→“哈喽～这么晚还没睡呀…”；“你叫什么名字？”→“我叫小柔啦…”；问能力 → 列举聊天/笑话/音乐/天气/新闻等
-- [ ] 手机配网页自动弹出（DNS 补丁后待复测）
+- [x] **手机配网页自动弹出**（2026-10-18 iPhone 实测通过）：连上热点后 iOS 请求 `GET /hotspot-detect.html (Host: captive.apple.com)` → 302 → `GET /` → 弹出配网页。Android 未测（同原理，探测 `connectivitycheck.gstatic.com/generate_204`）
 
 #### 阶段 2 调试记录
 | 现象 | 根因 | 处理 |
@@ -167,7 +169,8 @@ TDD_AUDIO_T5AI_T cfg = {
 | 热点名 `XiAozhi-5C90` | MAC 转大写时把前缀也转了 | 只转后缀 |
 | 打开 192.168.4.1 显示“无法访问”（设备日志显示请求已到、页面已发） | `http_host` 处理完立即 close，T5 lwIP 发 RST，浏览器收到 reset 且 0 字节（电脑连热点用 curl 复现） | 发完响应后等客户端读完并关闭（`Connection: close`，最长 1.5 s）再返回 |
 | 改用 `shutdown(SHUT_WR)` 后设备 MemFault | 该 lwIP 在 `lwip_netconn_do_close_internal` 空指针（addr2line 定位） | 不用 shutdown |
-| 手机不弹配网页，设备收不到任何 DNS 查询 | 平台 DHCP 服务默认启动 “nack DNS”，对所有查询回 **REFUSED**，且绑定 AP 网卡优先接收 | `setup.ps1` 平台补丁注释掉 `dhcp_enable_nack_dns_server()`；应用 DNS 绑定 AP IP |
+| 手机不弹配网页，应用里的 DNS 服务收不到任何查询；手机连上约 15 s 后自己断开（`sta_del_req`） | **T5 双核：Wi-Fi、SoftAP 的 DHCP 服务和它附带的 DNS 应答都跑在 CP 核**（`t5_os/cp/...`，CP 的 sdkconfig 才有 `CONFIG_WIFI_ENABLE`/`CONFIG_DHCP`），应用在 AP 核。DHCP 给手机下发的 DNS 是 192.168.4.1，但 CP 上的 “nack DNS” 对所有查询回 **REFUSED**；目的端口 53 的包在 CP 就被消费，到不了 AP 上的应用 | `setup.ps1` 补丁改 **`t5_os/cp/components/lwip_intf_v2_1/dhcpd/dhcp-server.c`** 的 `process_dns_message()`：A 记录一律回 AP 地址（TTL 60），其他类型回空的 NOERROR。TCP 80 仍会转到 AP 上的 `http_host`。删除应用侧 `xz_dns.c` |
+| （弯路）先后改了 `t5_os/ap/...` 下的 `dhcp-server-main.c`（关掉 nack DNS）和 `dhcp-server.c`（DNS 选项），均无效 | 平台源码有 `ap/` 与 `cp/` 两份，分别编进两个核；`ap/` 的 DHCP 在本应用中不处理 SoftAP 客户端。判断依据：CP 构建目录的 `.obj` 未因 `ap/` 修改而重编，两核 sdkconfig 对比 | 已用 `git checkout` 还原 `ap/` 两个文件，`setup.ps1` 只保留 CP 补丁 |
 | OTA HTTPS 失败 `mbedtls_ssl_handshake returned 0x1c` | -0x1C = `MBEDTLS_ERR_THREADING_BAD_INPUT_DATA`：没调 `tuya_tls_init()`（正常由 `tuya_iot_init` 调用），mbedtls 互斥锁未注册 | 应用启动时调用 `tuya_tls_init()` |
 | 对时后 `time()` 仍为 -1 | 平台 newlib `time()` 无 gettimeofday 后端，恒 -1；`settimeofday` 也不存在 | 应用内提供 `time()`（取 `tal_time_get_posix()`），并调用 `tal_time_service_init()`；RTC 用 `bk_rtc_settimeofday` |
 | 监视脚本中文乱码 | Python 在 Windows 控制台的输出编码问题，设备输出的 UTF-8 是正确的（hexdump 确认） | 用 bash 直接读日志 |

@@ -90,18 +90,54 @@ if (Test-Path $PlatformScript) {
     Write-Host '[setup] T5AI platform not downloaded yet: run `tos.py build` once, then re-run this script.'
 }
 
-# 6. T5AI platform patch: the SoftAP DHCP server starts a DNS responder that answers
-#    every query with REFUSED on the AP interface. Phones then never see the captive
-#    portal; the application runs its own captive DNS (apps/xiaozhi_toy xz_dns.c).
-$DhcpMain = Join-Path $Sdk 'platform\T5AI\t5_os\ap\components\lwip_intf_v2_1\dhcpd\dhcp-server-main.c'
-if (Test-Path $DhcpMain) {
-    $c = [IO.File]::ReadAllText($DhcpMain)
-    $orig = "`tdhcp_enable_nack_dns_server();"
-    $patched = "`t/* KW002: captive DNS is served by the application */ /* dhcp_enable_nack_dns_server(); */"
-    if (-not $c.Contains($patched)) {
-        if (-not $c.Contains($orig)) { throw "nack DNS call not found in $DhcpMain, platform layout changed?" }
-        [IO.File]::WriteAllText($DhcpMain, $c.Replace($orig, $patched))
-        Write-Host "[setup] Patched $DhcpMain (no REFUSED DNS responder on the SoftAP)"
+# 6. T5AI platform patch: captive portal DNS. Wi-Fi, the SoftAP DHCP server and its DNS
+#    responder run on the CP core (t5_os\cp\..., CONFIG_WIFI_ENABLE / CONFIG_DHCP), not
+#    on the AP core that runs the application. DHCP gives the phone the AP address as DNS
+#    server, but that responder answers every query with REFUSED, so phones never find
+#    the provisioning page. Make it answer A queries with the AP address instead.
+$CpDhcpSrv = Join-Path $Sdk 'platform\T5AI\t5_os\cp\components\lwip_intf_v2_1\dhcpd\dhcp-server.c'
+if (Test-Path $CpDhcpSrv) {
+    $c = [IO.File]::ReadAllText($CpDhcpSrv)
+    if (-not $c.Contains('KW002: captive portal DNS')) {
+        $pattern = '(?s)\t/\* make the header represent a response \*/.*?\tSEND_RESPONSE\(dhcps\.dnssock, \(struct sockaddr \*\)fromaddr,\s*msg, endp - msg\);'
+        if ($c -notmatch $pattern) { throw "DNS responder not found in $CpDhcpSrv, platform layout changed?" }
+        $captive = @'
+	/* KW002: captive portal DNS - answer A queries with the AP address, anything else
+	 * with an empty NOERROR answer (was: REFUSED for everything) */
+	{
+		char *q = msg + sizeof(struct dns_header);
+		int qtype;
+
+		while (q < endp && *q)
+			q += (unsigned char)*q + 1; /* QNAME labels */
+		q += 1;
+		if (q + 4 > endp)
+			return -1;
+		qtype = ((unsigned char)q[0] << 8) | (unsigned char)q[1];
+		q += 4; /* QTYPE, QCLASS */
+		msg[2] = 0x81; /* response, recursion desired */
+		msg[3] = 0x80; /* recursion available, NOERROR */
+		hdr->num_questions = htons(0x01);
+		hdr->answer_rrs = 0;
+		hdr->authority_rrs = 0;
+		hdr->additional_rrs = 0;
+		if (qtype == 1 && q + 16 <= msg + SERVER_BUFFER_SIZE) {
+			hdr->answer_rrs = htons(0x01);
+			*q++ = 0xC0; *q++ = 0x0C;                  /* name: pointer to the question */
+			*q++ = 0x00; *q++ = 0x01;                  /* type A */
+			*q++ = 0x00; *q++ = 0x01;                  /* class IN */
+			*q++ = 0x00; *q++ = 0x00; *q++ = 0x00; *q++ = 0x3C; /* TTL 60 s */
+			*q++ = 0x00; *q++ = 0x04;                  /* RDLENGTH */
+			write_u32(q, dhcps.my_ip);                 /* network order */
+			q += 4;
+		}
+		dhcp_d("captive dns reply, qtype %d\r\n", qtype);
+		SEND_RESPONSE(dhcps.dnssock, (struct sockaddr *)fromaddr, msg, q - msg);
+	}
+'@
+        $c = [regex]::Replace($c, $pattern, { param($m) $captive.TrimEnd("`r", "`n") })
+        [IO.File]::WriteAllText($CpDhcpSrv, $c)
+        Write-Host "[setup] Patched $CpDhcpSrv (captive portal DNS on the SoftAP)"
     }
 }
 

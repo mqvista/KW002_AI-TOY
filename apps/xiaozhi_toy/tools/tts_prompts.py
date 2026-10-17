@@ -23,7 +23,14 @@ SOUND_DIR = os.path.join(APP_DIR, 'assets', 'sounds')
 PROMPTS = {
     'charging.ogg': '开始充电',
     'charger_removed.ogg': '充电器已拔出',
+    # provisioning: "请用手机连接热点，小智杠" + the SSID suffix spelled out (Xiaozhi-5C90)
+    'connect_ap.ogg': '请用手机连接热点，小智杠',
 }
+# single characters of the SSID suffix (MAC hex digits), same voice as connect_ap
+for _i, _t in enumerate('零一二三四五六七八九'):
+    PROMPTS[f'ssid_{_i}.ogg'] = _t
+for _c in 'ABCDEF':
+    PROMPTS[f'ssid_{_c.lower()}.ogg'] = _c
 
 VOICE = 'Microsoft Huihui Desktop'
 RATE = 16000
@@ -78,8 +85,10 @@ def main():
         x, rate = sf.read(wav, dtype='float32')
         os.remove(wav)
         assert rate == RATE, rate
-        x = trim(x)
-        gain = target / max(active_rms(x), 1e-6)
+        # single characters get more room so a spelled out SSID is easy to follow
+        x = trim(x, pad=int((0.12 if name.startswith('ssid_') else 0.05) * RATE))
+        # match the reference loudness, but never push the peak above -0.5 dBFS (no clipping)
+        gain = min(target / max(active_rms(x), 1e-6), 0.95 / max(float(np.max(np.abs(x))), 1e-6))
         x = np.clip(x * gain, -0.98, 0.98)
         out = os.path.join(SOUND_DIR, name)
         sf.write(out, x, RATE, format='OGG', subtype='OPUS')

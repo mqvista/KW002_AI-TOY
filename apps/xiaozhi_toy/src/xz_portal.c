@@ -1,6 +1,10 @@
 /**
  * @file xz_portal.c
  * @brief SoftAP Wi-Fi provisioning portal (open AP + captive web page).
+ *
+ * DNS for the AP clients is answered on the CP core (platform DHCP server's DNS
+ * responder, patched by tools/setup.ps1 to return the AP address), so phones'
+ * connectivity checks land on this web server and open the page automatically.
  */
 
 #include <stdio.h>
@@ -14,7 +18,6 @@
 #include "http_captive.h"
 
 #include "xz_config.h"
-#include "xz_dns.h"
 #include "xz_portal.h"
 #include "xz_settings.h"
 #include "xz_wifi.h"
@@ -400,7 +403,10 @@ OPERATE_RET xz_portal_run(void)
     host_cfg.priority = THREAD_PRIO_2;
     host_cfg.thread_name = "xz_portal";
     TUYA_CALL_ERR_RETURN(http_host_start(&sg_host, &host_cfg, __http_request_cb, __http_idle_cb, NULL));
-
-    TUYA_CALL_ERR_LOG(xz_dns_start(XZ_AP_IP));
     return rt;
+}
+
+const char *xz_portal_ssid(void)
+{
+    return sg_ap_ssid;
 }
