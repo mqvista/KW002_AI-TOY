@@ -147,24 +147,43 @@ TDD_AUDIO_T5AI_T cfg = {
 **阶段 1 结论：所有 IO 已在真机验证通过**（P33/P12 按键、P19 功放 + 喇叭 100% 音量、麦克风、P8 LED、P21 充电检测、P28 电池 1/4 分压）。
 - [ ] `examples/multimedia/audio_kws`：「你好小智」唤醒率
 
-### 阶段 2：小智协议最小闭环（先写死 Wi-Fi）
-- [ ] Wi-Fi 连接（SSID/密码先写在配置里）
-- [ ] OTA 请求：HTTPS POST，解析 websocket url/token/激活码，存 KV
-- [ ] WebSocket 客户端：TLS + 自定义请求头 + 帧收发（TuyaOpen 自带的 websocket_transporter 不支持自定义头，打算在 TLS 传输层上自己写一个轻量实现）
-- [ ] `hello` 握手 → 按键触发 `listen start` → 上行 Opus(16 kHz/60 ms) → 收 `stt` / `tts` → 下行 Opus 解码播放
-- [ ] 跑通“按住 P33 说话 → 小智回答”
+### 阶段 2：配网 + 激活 + 对话闭环（应用 `apps/xiaozhi_toy`）
+用户要求阶段 2 直接做完配网和激活码播报（不再写死 Wi-Fi）。配网入口：**从未配网 → 开机直接播报“进入配网模式”并开启配网；已配网 → 长按 P12 3 s，播报后开启配网**。
+
+- [x] SoftAP 配网（`xz_portal.c`）：开机扫描 Wi-Fi → 热点 `Xiaozhi-<MAC 后 4 位>`（无密码）→ TuyaOpen `http_host`/`http_site`/`http_captive` 网页 + 自研 DNS 劫持（`xz_dns.c`）→ 保存到 KV 后重启；新凭据首次连不上自动回配网
+- [x] 长按 P12：播报 `wificonfig` → 置 KV 标志 → 重启 → 直接进配网（不重复播报）
+- [x] SNTP 对时（`xz_time.c`）+ OTA 返回的 `server_time` 校准
+- [x] OTA 签到 / 激活 v1（`xz_ota.c`）：POST `/xiaozhi/ota/`、`/xiaozhi/ota/activate`，证书校验固定 DigiCert Global Root G2
+- [x] 激活码语音播报：`activation.ogg` + 数字 0~9（xiaozhi-esp32 提示音，MIT，`tools/gen_prompts.py` 嵌入为 C 数组）
+- [x] WebSocket（`xz_ws.c`）：自研 RFC 6455 客户端，单 I/O 线程独占 TLS，自定义头 `Authorization/Protocol-Version/Device-Id/Client-Id`
+- [x] 协议：`hello`（opus 16 kHz/60 ms，不声明 MCP）→ `listen start (auto)` → `stt`/`tts start|sentence_start|stop` → 播完自动继续聆听；说话时按 P33 发 `abort` 打断；聆听时按 P33 结束；30 s 无识别自动关闭
+- [x] 音频（`xz_audio.c`）：麦克风 20 ms 帧 → Opus 60 ms（复杂度 3）上行；TTS/提示音共用解码播放线程（下行 24 kHz 直接解码到 16 kHz）
+- [x] **真机多轮对话通过**（2026-10-18）：“你好。”→“哈喽～这么晚还没睡呀…”；“你叫什么名字？”→“我叫小柔啦…”；问能力 → 列举聊天/笑话/音乐/天气/新闻等
+- [ ] 手机配网页自动弹出（DNS 补丁后待复测）
+
+#### 阶段 2 调试记录
+| 现象 | 根因 | 处理 |
+|---|---|---|
+| 热点名 `XiAozhi-5C90` | MAC 转大写时把前缀也转了 | 只转后缀 |
+| 打开 192.168.4.1 显示“无法访问”（设备日志显示请求已到、页面已发） | `http_host` 处理完立即 close，T5 lwIP 发 RST，浏览器收到 reset 且 0 字节（电脑连热点用 curl 复现） | 发完响应后等客户端读完并关闭（`Connection: close`，最长 1.5 s）再返回 |
+| 改用 `shutdown(SHUT_WR)` 后设备 MemFault | 该 lwIP 在 `lwip_netconn_do_close_internal` 空指针（addr2line 定位） | 不用 shutdown |
+| 手机不弹配网页，设备收不到任何 DNS 查询 | 平台 DHCP 服务默认启动 “nack DNS”，对所有查询回 **REFUSED**，且绑定 AP 网卡优先接收 | `setup.ps1` 平台补丁注释掉 `dhcp_enable_nack_dns_server()`；应用 DNS 绑定 AP IP |
+| OTA HTTPS 失败 `mbedtls_ssl_handshake returned 0x1c` | -0x1C = `MBEDTLS_ERR_THREADING_BAD_INPUT_DATA`：没调 `tuya_tls_init()`（正常由 `tuya_iot_init` 调用），mbedtls 互斥锁未注册 | 应用启动时调用 `tuya_tls_init()` |
+| 对时后 `time()` 仍为 -1 | 平台 newlib `time()` 无 gettimeofday 后端，恒 -1；`settimeofday` 也不存在 | 应用内提供 `time()`（取 `tal_time_get_posix()`），并调用 `tal_time_service_init()`；RTC 用 `bk_rtc_settimeofday` |
+| 监视脚本中文乱码 | Python 在 Windows 控制台的输出编码问题，设备输出的 UTF-8 是正确的（hexdump 确认） | 用 bash 直接读日志 |
 
 ### 阶段 3：完整交互
-- [ ] 状态机（参照 xiaozhi-esp32 `application.cc` / `device_state_machine.cc`）
-- [ ] 唤醒词「你好小智」+ AEC 自由对话 + 播报时打断（`abort`）
-- [ ] LED 状态：配网闪烁 / 聆听常亮 / 说话呼吸 / 低电慢闪 / 充电
-- [ ] 激活流程：设备无屏幕 → **语音播报 6 位激活码**（需要 0~9 数字提示音资源）
-- [ ] 提示音：开机、配网、连网成功、断网、低电（可复用 TuyaOpen 本地中文提示音）
+- [x] 状态机（idle/opening/listening/speaking/offline，`app_main.c`）
+- [x] 激活流程：语音播报 6 位激活码（阶段 2 已完成）
+- [x] 说话时按键打断（`abort`）
+- [ ] 唤醒词「你好小智」（TuyaOpen KWS）+ AEC 自由对话（`realtime` 模式，边播边听）
+- [ ] LED：低电慢闪 / 充电指示
+- [ ] 提示音：断网、低电（`low_battery.ogg` 已嵌入）
 - [ ] MCP 工具：音量调节、电量查询（`self.audio_speaker.set_volume`、`self.get_battery` 等）
 
-### 阶段 4：配网、电池、功耗
-- [ ] SoftAP 配网：热点 `Xiaozhi-XXXX` + 网页填 Wi-Fi；P12 长按 3 s 重新配网（沿用原厂习惯）
-- [ ] 电池：P28 采样 → ×4 → 查原厂电压表（见 `firmware_io_analysis.md` 4.1）；P21 充电检测；低于 20% 播报
+### 阶段 4：电池、功耗
+- [x] SoftAP 配网（阶段 2 已完成）
+- [ ] 电池：板级 `tdl_power` 已就绪（P28 ×4、原厂电量表、P21）；应用层低于 20% 播报
 - [ ] 低功耗：空闲超时关功放（P19 拉低），P33 唤醒
 - [ ] 音量记忆（KV）
 
