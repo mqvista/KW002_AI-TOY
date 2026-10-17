@@ -97,9 +97,20 @@ static void __dns_task(void *arg)
             tal_system_sleep(10);
             continue;
         }
+        /* log the queried name (QNAME labels -> dotted) */
+        char name[64] = {0};
+        uint32_t p = DNS_HDR_LEN, w = 0;
+        while (p < (uint32_t)n && buf[p] && w < sizeof(name) - 2) {
+            uint8_t l = buf[p++];
+            for (uint8_t k = 0; k < l && p < (uint32_t)n && w < sizeof(name) - 2; k++) {
+                name[w++] = (char)buf[p++];
+            }
+            name[w++] = '.';
+        }
         uint32_t out = __dns_build_reply(buf, (uint32_t)n);
         if (out > 0) {
-            tal_net_send_to(fd, buf, out, from, port);
+            int s = tal_net_send_to(fd, buf, out, from, port);
+            PR_NOTICE("dns: %s -> reply %u bytes (send %d)", name, out, s);
         }
     }
 

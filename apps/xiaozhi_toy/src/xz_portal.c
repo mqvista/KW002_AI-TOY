@@ -246,6 +246,7 @@ static OPERATE_RET __page_index_cb(const HTTP_HOST_REQUEST_T *req, void *user_ct
     strcat(page, sg_page_tail);
 
     rt = http_host_reply(req->client_fd, "200 OK", "text/html; charset=utf-8", page);
+    PR_NOTICE("portal: page %u bytes, reply %d", (unsigned)strlen(page), rt);
     tal_free(page);
     return rt;
 }
@@ -279,15 +280,29 @@ static OPERATE_RET __page_save_cb(const HTTP_HOST_REQUEST_T *req, void *user_ctx
     return http_host_reply(req->client_fd, "200 OK", "text/html; charset=utf-8", sg_page_saved);
 }
 
-static OPERATE_RET __http_request_cb(const HTTP_HOST_REQUEST_T *req, void *user_ctx)
+/*
+ * http_host closes the socket right after the handler returns. On this lwIP that close
+ * turns into a RST while the response is still in flight and the browser gets
+ * "connection reset" with no data. The response carries "Connection: close", so wait
+ * here until the client has read it and closed its side (recv timeout is the host's
+ * 30 ms slice, ~1.5 s max). Note: shutdown(SHUT_WR) + close crashes this lwIP
+ * (NULL pcb in lwip_netconn_do_close_internal), so it is not used.
+ */
+static void __graceful_finish(int fd)
+{
+    char tmp[128];
+
+    for (int i = 0; i < 50; i++) {
+        int n = tal_net_recv(fd, tmp, sizeof(tmp));
+        if (n == 0 || (n < 0 && n != OPRT_TIMEOUT)) {
+            break; /* client closed */
+        }
+    }
+}
+
+static OPERATE_RET __http_dispatch(const HTTP_HOST_REQUEST_T *req)
 {
     OPERATE_RET rt;
-
-    (void)user_ctx;
-    if (NULL == req || NULL == req->raw) {
-        return OPRT_INVALID_PARM;
-    }
-    PR_DEBUG("portal %s %s", req->method, req->path);
 
     if (OPRT_OK == http_captive_handle_http(req)) {
         return OPRT_OK; /* OS connectivity probe answered with a redirect */
@@ -299,6 +314,23 @@ static OPERATE_RET __http_request_cb(const HTTP_HOST_REQUEST_T *req, void *user_
         }
         return http_host_reply_not_found(req->client_fd);
     }
+    return rt;
+}
+
+static OPERATE_RET __http_request_cb(const HTTP_HOST_REQUEST_T *req, void *user_ctx)
+{
+    OPERATE_RET rt;
+    char host[64] = {0};
+
+    (void)user_ctx;
+    if (NULL == req || NULL == req->raw) {
+        return OPRT_INVALID_PARM;
+    }
+    http_host_get_header_value(req->raw, req->raw_len, "Host", host, sizeof(host));
+    PR_NOTICE("portal: %s %s (Host: %s)", req->method, req->path, host);
+
+    rt = __http_dispatch(req);
+    __graceful_finish(req->client_fd);
     return rt;
 }
 
