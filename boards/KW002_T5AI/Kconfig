@@ -2,6 +2,13 @@ config CHIP_CHOICE
     string
     default "T5AI"
 
+# Single USB-TTL setup: route the CP-core print (all platform + TuyaOpen logs) to
+# UART0 (P11 TX / P10 RX) so flashing and logs share one port. The T5AI
+# build_example.py reads this and overrides the CP CONFIG_UART_PRINT_PORT.
+config BOARD_LOG_UART_PORT
+    int
+    default 0
+
 config BOARD_CHOICE
     string
     default "KW002_T5AI"

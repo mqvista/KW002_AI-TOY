@@ -75,11 +75,15 @@
 
 > 编译日志中的 `country code error: ...ip-api.com` 是 tos.py 查询所在国家失败，不影响编译。
 
-**串口接线**（TuyaOpen T5AI 平台配置 `CONFIG_UART_PRINT_PORT=1`、460800；引脚来自原厂固件 UART 表）：
+**串口接线：只用一根 USB-TTL（COM10，CH343）接 UART0**
 | 用途 | 串口 | 模组引脚 | 波特率 |
 |---|---|---|---|
-| 刷写固件 | UART0 | P11 = TX，P10 = RX | tos.py / tyutool 自动 |
-| 运行日志 | UART1 | P0 = TX，P1 = RX | 460800 |
+| 刷写固件 | UART0 | P11 = TX，P10 = RX | tyutool 921600 |
+| 运行日志 | UART0（同一个口） | P11 = TX，P10 = RX | 460800 |
+
+T5AI 平台默认把日志放在 UART1（P0/P1，`CONFIG_UART_PRINT_PORT=1`）。板级 Kconfig 加了 `BOARD_LOG_UART_PORT=0` 后，平台的 `build_example.py` 会生成 `tuya_logport.config` 覆盖成 UART0；第一次切换时会自动清掉 `platform/T5AI/t5_os/build/bk7258` 重新生成配置（日志里会显示 `log-uart intent changed (default -> 0)`）。
+
+> 刷写报 `serial I/O: Access is denied` 说明串口被占用，先关掉 tyutool 图形界面、串口助手、`tos.py monitor` 等。
 
 刷写会覆盖片上原厂固件（`*_QIO_*.bin` 从 0 地址写入 bootloader + 应用）；原厂整片 dump 可以用 tyutool 写回恢复。
 
