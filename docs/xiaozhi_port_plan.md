@@ -114,11 +114,21 @@ TDD_AUDIO_T5AI_T cfg = {
     .spk_pin = BOARD_SPEAKER_EN_PIN, .spk_pin_polarity = TUYA_GPIO_LEVEL_LOW,
 };
 ```
+#### 首次上机调试记录（2026-10-17）
+- 刷写：`tos.py flash -p COM10`（tyutool 3.2.10，921600，2 MB 约 35 s）。CH343 的 RTS 接在模组复位脚上，tyutool 和抓日志脚本都能**自动复位**设备。芯片 ID `0x72360101`（BK7236）。
+- 日志：`BOARD_LOG_UART_PORT=0` 生效，UART0 @460800 能看到启动日志。崩溃转储原来仍在 UART1（`CONFIG_DUMP_UART_PRINT_PORT=1`），`tools/setup.ps1` 给平台 `build_example.py` 打了补丁，让崩溃转储也跟到 UART0。
+- **崩溃 1**：`MemFault`（CFSR 0x82，空指针），addr2line 定位到 `tal_sw_timer_create` → 应用没调 `tal_sw_timer_init()`。LED 驱动的闪烁依赖软件定时器。所有应用开头都要先 `tal_sw_timer_init(); tal_workq_init();`。
+  - 定位方法：`arm-none-eabi-addr2line -f -i -e dist/<app>/debug/bk7258_ap/app.elf <PC> <LR>`（TuyaOpen 应用跑在 AP 核 = CPU1）。
+- **电池读数错误**：TuyaOpen `tdd_power_soc` 的默认 T5 模型（1.0 V = 码值 2469，每伏 2429）在本机偏差约 3 倍；本机 P28 稳定码值约 7000。用芯片校准函数 `bk_adc_data_calculate`（efuse，`tkl_adc_read_voltage` 内部也用它）采样得到：码值 3000/5000/7000/9000 → 389/655/922/1189 mV，即 1.0 V = 7583、每伏 7500。板级在**注册电源驱动并做过一次转换后**才计算（该曲线依赖 tkl_adc 设置的饱和模式，提前算会差 3 倍），结果 `cal_low=7583, cal_span=7500`。
+- 开机第一次 ADC 转换时码值从 136 慢慢爬升（引脚刚切到模拟输入、分压电容在充电），板级先读一次再等 300 ms。
+- 结果：电池 3704 mV（充电中），按原厂电量表约 29%，与原厂算法（校准电压 ×4）一致 → **分压比 1/4 确认**。
+
 用 `apps/hw_test` 逐项验证（刷入后看串口日志）：
 - [ ] 开机 LED 亮 2 s、灭 2 s，然后慢闪 → 确认 P8 极性
 - [ ] 按住 P33 录音（最长 5 s），松开回放 → 麦克风、功放 P19、喇叭、音量
 - [ ] 单击 P12 播放 1 kHz 测试音；长按 3 s 有日志
-- [ ] 每 5 s 打印电池电压/电量/充电状态 → 对比万用表，修正分压比；插拔充电器看 P21 状态变化
+- [x] 每 5 s 打印电池电压/电量/充电状态：电压正确（3704 mV），充电中 P21 = 低 → charging
+- [ ] 拔掉充电器看 P21 状态变化（charging → discharging）
 - [ ] `examples/multimedia/audio_kws`：「你好小智」唤醒率
 
 ### 阶段 2：小智协议最小闭环（先写死 Wi-Fi）
