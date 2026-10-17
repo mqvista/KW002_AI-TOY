@@ -1,0 +1,4 @@
+[submodule "TuyaOpen"]
+	path = TuyaOpen
+	url = https://github.com/tuya/TuyaOpen.git
+	shallow = true

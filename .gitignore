@@ -1,0 +1,19 @@
+# 原厂固件 dump / 中间产物（含设备授权信息，禁止提交）
+*.bin
+*.elf
+*.map
+tools/fw_re/out/
+
+# TuyaOpen 应用构建产物
+.build/
+dist/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
