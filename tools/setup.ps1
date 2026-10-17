@@ -68,4 +68,26 @@ foreach ($board in Get-ChildItem (Join-Path $Root 'boards') -Directory) {
     }
 }
 
+# 5. T5AI platform patch: when a board moves the log to another UART
+#    (BOARD_LOG_UART_PORT), move the crash dump there too, otherwise exceptions
+#    are printed on UART1 and a single-cable setup never sees them.
+#    The platform repo is downloaded by the first `tos.py build`; re-run this
+#    script after that.
+$PlatformScript = Join-Path $Sdk 'platform\T5AI\build_example.py'
+if (Test-Path $PlatformScript) {
+    $py = [IO.File]::ReadAllText($PlatformScript)
+    $orig = '            f.write(f"CONFIG_UART_PRINT_PORT={port}\n")'
+    $dump = '            f.write(f"CONFIG_DUMP_UART_PRINT_PORT={port}\n")'
+    if (-not $py.Contains($dump)) {
+        if (-not $py.Contains($orig)) { throw "Log-port line not found in $PlatformScript, platform layout changed?" }
+        $nl = if ($py.Contains("`r`n")) { "`r`n" } else { "`n" }
+        [IO.File]::WriteAllText($PlatformScript, $py.Replace($orig, $orig + $nl + $dump))
+        # force the generated sdkconfig to be rebuilt with the new fragment
+        Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $Sdk 'platform\T5AI\t5_os\build\.tuya_logport_intent')
+        Write-Host "[setup] Patched $PlatformScript (crash dump follows BOARD_LOG_UART_PORT)"
+    }
+} else {
+    Write-Host '[setup] T5AI platform not downloaded yet: run `tos.py build` once, then re-run this script.'
+}
+
 Write-Host '[setup] Done. TuyaOpen\boards\T5AI\Kconfig is modified locally on purpose (not committed).'

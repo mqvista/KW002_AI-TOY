@@ -16,18 +16,30 @@
 #include "tdd_led_gpio.h"
 #include "tdd_button_gpio.h"
 #if defined(POWER_NAME)
+#include "tkl_adc.h"
 #include "tdd_power_soc.h"
+
+/* Beken SARADC calibration (efuse based, platform driver): raw code -> mV */
+extern uint16_t bk_adc_data_calculate(uint16_t adc_val, uint8_t adc_chan);
 #endif
+
+/***********************************************************
+************************macro define************************
+***********************************************************/
+#define BAT_CAL_RAW_LO     3000
+#define BAT_CAL_RAW_HI     9000
+#define BAT_ADC_SETTLE_MS  300
 
 /***********************************************************
 ***********************variable define**********************
 ***********************************************************/
 #if defined(POWER_NAME)
-static const TDD_POWER_ADC_BATTERY_T s_battery = {
+/* cal_low / cal_span are filled at boot from the chip calibration, see __board_battery_cal() */
+static TDD_POWER_ADC_BATTERY_T s_battery = {
     .adc_num       = TUYA_ADC_NUM_0,
     .adc_ch        = BOARD_BAT_ADC_CH,
     .divider_ratio = BOARD_BAT_DIVIDER,
-    .samples       = 16, /* no board cal yet -> SoC default T5 SARADC model */
+    .samples       = 16,
 };
 
 static const TDD_POWER_GPIO_CHARGER_T s_charger = {
@@ -123,6 +135,46 @@ static OPERATE_RET __board_register_led(void)
     return rt;
 }
 
+#if defined(POWER_NAME)
+/**
+ * @brief Derive the tdd_power_soc linear model from this chip's SARADC calibration.
+ *
+ * The generic T5 model in tdd_power_soc (1.0 V = 2469, 2429 counts/V) is about 3x
+ * off for the codes tkl_adc returns here (~7500 counts/V), so sample the efuse
+ * based curve at two codes and convert it to cal_low (code at 1.0 V) / cal_span.
+ * Must run after a tkl_adc conversion on this channel (see __board_register_power).
+ */
+static void __board_battery_cal(void)
+{
+    uint16_t mv_lo = bk_adc_data_calculate(BAT_CAL_RAW_LO, BOARD_BAT_ADC_CH);
+    uint16_t mv_hi = bk_adc_data_calculate(BAT_CAL_RAW_HI, BOARD_BAT_ADC_CH);
+
+    if (mv_hi <= mv_lo) {
+        PR_ERR("battery adc cal invalid (%u/%u mV), using SoC default model", mv_lo, mv_hi);
+        return;
+    }
+
+    float counts_per_mv = (float)(BAT_CAL_RAW_HI - BAT_CAL_RAW_LO) / (float)(mv_hi - mv_lo);
+    s_battery.cal_span  = (uint16_t)(counts_per_mv * 1000.0f + 0.5f);
+    s_battery.cal_low   = (uint16_t)(BAT_CAL_RAW_LO + (1000.0f - mv_lo) * counts_per_mv + 0.5f);
+    PR_DEBUG("battery adc cal: low %u, span %u", s_battery.cal_low, s_battery.cal_span);
+}
+
+/**
+ * @brief First conversion after boot switches P28 to analog and the divider node
+ *        ramps up for a while; read once and wait so the driver's filter is not
+ *        seeded with a low value.
+ */
+static void __board_battery_settle(void)
+{
+    int32_t raw = 0;
+
+    tkl_adc_read_single_channel(s_battery.adc_num, s_battery.adc_ch, &raw);
+    tal_system_sleep(BAT_ADC_SETTLE_MS);
+    tkl_adc_read_single_channel(s_battery.adc_num, s_battery.adc_ch, &raw);
+}
+#endif
+
 static OPERATE_RET __board_register_power(void)
 {
     OPERATE_RET rt = OPRT_OK;
@@ -148,6 +200,12 @@ static OPERATE_RET __board_register_power(void)
     };
 
     TUYA_CALL_ERR_RETURN(tdd_power_soc_register(POWER_NAME, &soc_cfg));
+
+    /* Order matters: the calibration curve depends on the SARADC config that tkl_adc
+     * applies on a read, so sample it only after the driver initialized the channel
+     * and did a conversion. The driver reads cal_low/cal_span through the pointer. */
+    __board_battery_settle();
+    __board_battery_cal();
 #endif
 
     return rt;

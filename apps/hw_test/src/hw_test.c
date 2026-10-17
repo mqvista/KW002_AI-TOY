@@ -21,6 +21,10 @@
 #include "tdl_led_manage.h"
 #if defined(POWER_NAME)
 #include "tdl_power_manage.h"
+#include "tkl_adc.h"
+
+/* Beken SARADC calibration (platform driver), returns mV for a raw code */
+extern uint16_t bk_adc_data_calculate(uint16_t adc_val, uint8_t adc_chan);
 #endif
 
 /***********************************************************
@@ -217,7 +221,9 @@ static void __play_tone(void)
 
 static void __led_init(void)
 {
+    PR_NOTICE("[LED] find %s", LED_NAME);
     sg_led_hdl = tdl_led_find_dev(LED_NAME);
+    PR_NOTICE("[LED] handle %p, open", sg_led_hdl);
     if (NULL == sg_led_hdl || OPRT_OK != tdl_led_open(sg_led_hdl)) {
         PR_ERR("led open failed");
         sg_led_hdl = NULL;
@@ -271,10 +277,31 @@ static void __power_report(void)
     if (NULL == sg_pwr_hdl) {
         return;
     }
+
+    /* raw SARADC codes on P28, to calibrate the board divider / model */
+    int32_t raw[16] = {0};
+    int32_t rmin = 0x7fffffff, rmax = 0, rsum = 0;
+    for (int i = 0; i < 16; i++) {
+        tkl_adc_read_single_channel(TUYA_ADC_NUM_0, BOARD_BAT_ADC_CH, &raw[i]);
+        rmin = (raw[i] < rmin) ? raw[i] : rmin;
+        rmax = (raw[i] > rmax) ? raw[i] : rmax;
+        rsum += raw[i];
+    }
+    PR_NOTICE("[ADC] ch%d raw min %d max %d avg(trim) %d | %d %d %d %d %d %d %d %d", BOARD_BAT_ADC_CH, rmin, rmax,
+              (rsum - rmin - rmax) / 14, raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7]);
+
+    /* chip calibration curve (efuse based), used by tkl_adc_read_voltage and the original firmware */
+    PR_NOTICE("[ADC] cal mV @raw 3000:%u 5000:%u 7000:%u 9000:%u | avg %d -> %u mV x%d = %u mV",
+              bk_adc_data_calculate(3000, BOARD_BAT_ADC_CH), bk_adc_data_calculate(5000, BOARD_BAT_ADC_CH),
+              bk_adc_data_calculate(7000, BOARD_BAT_ADC_CH), bk_adc_data_calculate(9000, BOARD_BAT_ADC_CH),
+              (rsum - rmin - rmax) / 14, bk_adc_data_calculate((rsum - rmin - rmax) / 14, BOARD_BAT_ADC_CH),
+              (int)BOARD_BAT_DIVIDER,
+              (uint32_t)(bk_adc_data_calculate((rsum - rmin - rmax) / 14, BOARD_BAT_ADC_CH) * BOARD_BAT_DIVIDER));
+
     tdl_power_battery_get_voltage(sg_pwr_hdl, &mv);
     tdl_power_battery_get_percent(sg_pwr_hdl, &pct);
     tdl_power_charger_get_state(sg_pwr_hdl, &st);
-    PR_NOTICE("[POWER] battery %u mV (P28 x%d), %u %%, %s", mv, (int)BOARD_BAT_DIVIDER, pct, __chg_str(st));
+    PR_NOTICE("[POWER] battery %u mV (P28 x%d), %u pct, %s", mv, (int)BOARD_BAT_DIVIDER, pct, __chg_str(st));
 }
 #endif
 
@@ -286,6 +313,10 @@ static void user_main(void)
     tal_log_init(TAL_LOG_LEVEL_DEBUG, 1024, (TAL_LOG_OUTPUT_CB)tkl_log_output);
     PR_NOTICE("==== KW002 hardware self test ====");
     PR_NOTICE("TuyaOpen %s (%s), board %s", OPEN_VERSION, OPEN_COMMIT, PLATFORM_BOARD);
+
+    /* LED flash/blink and button debounce run on TAL software timers / work queue */
+    tal_sw_timer_init();
+    tal_workq_init();
 
     TUYA_CALL_ERR_LOG(board_register_hardware());
     TUYA_CALL_ERR_LOG(__audio_init());
