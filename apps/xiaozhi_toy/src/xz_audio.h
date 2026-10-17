@@ -38,6 +38,10 @@ void xz_audio_play_sound(XZ_SOUND_E snd, BOOL_T wait);
 /** Speak a string of digits, e.g. an activation code. Blocks until played. */
 void xz_audio_play_digits(const char *digits);
 
+/** Speaker volume 0..100 (0 mutes the DAC), applied immediately. */
+void xz_audio_set_volume(uint8_t volume);
+uint8_t xz_audio_get_volume(void);
+
 /** Drop everything queued and stop the speaker immediately. */
 void xz_audio_stop_playback(void);
 

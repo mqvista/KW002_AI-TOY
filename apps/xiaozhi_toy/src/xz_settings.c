@@ -5,6 +5,7 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #include "tal_api.h"
 #include "tal_kv.h"
@@ -99,6 +100,19 @@ BOOL_T xz_settings_get_flag(const char *key)
 {
     char v[4];
     return __kv_get_str(key, v, sizeof(v)) && v[0] == '1';
+}
+
+int xz_settings_get_int(const char *key, int def)
+{
+    char v[12];
+    return __kv_get_str(key, v, sizeof(v)) && v[0] ? atoi(v) : def;
+}
+
+void xz_settings_set_int(const char *key, int value)
+{
+    char v[12];
+    snprintf(v, sizeof(v), "%d", value);
+    tal_kv_set(key, (const uint8_t *)v, strlen(v));
 }
 
 void xz_settings_set_flag(const char *key, BOOL_T on)

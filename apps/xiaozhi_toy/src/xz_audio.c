@@ -47,6 +47,7 @@ static QUEUE_HANDLE sg_mic_queue = NULL;
 static volatile BOOL_T sg_capture_on = FALSE;
 static XZ_AUDIO_SEND_CB sg_send_cb = NULL;
 static XZ_AUDIO_TAP_CB sg_mic_tap = NULL;
+static uint8_t sg_volume = XZ_SPEAKER_VOLUME;
 static OpusEncoder *sg_encoder = NULL;
 
 static QUEUE_HANDLE sg_play_queue = NULL;
@@ -279,7 +280,7 @@ OPERATE_RET xz_audio_init(void)
 
     TUYA_CALL_ERR_RETURN(tdl_audio_find(AUDIO_CODEC_NAME, &sg_audio));
     TUYA_CALL_ERR_RETURN(tdl_audio_open(sg_audio, __mic_cb));
-    TUYA_CALL_ERR_LOG(tdl_audio_volume_set(sg_audio, XZ_SPEAKER_VOLUME));
+    TUYA_CALL_ERR_LOG(tdl_audio_volume_set(sg_audio, sg_volume));
 
     THREAD_CFG_T enc_cfg = {.stackDepth = 40 * 1024, .priority = THREAD_PRIO_2, .thrdname = "xz_enc"};
     TUYA_CALL_ERR_RETURN(tal_thread_create_and_start(&sg_enc_thread, NULL, NULL, __enc_task, NULL, &enc_cfg));
@@ -301,6 +302,19 @@ void xz_audio_capture(BOOL_T on, XZ_AUDIO_SEND_CB cb)
 void xz_audio_set_mic_tap(XZ_AUDIO_TAP_CB cb)
 {
     sg_mic_tap = cb;
+}
+
+void xz_audio_set_volume(uint8_t volume)
+{
+    sg_volume = volume > 100 ? 100 : volume;
+    if (sg_audio) {
+        tdl_audio_volume_set(sg_audio, sg_volume);
+    }
+}
+
+uint8_t xz_audio_get_volume(void)
+{
+    return sg_volume;
 }
 
 void xz_audio_feed_opus(const uint8_t *data, uint32_t len)

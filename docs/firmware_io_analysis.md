@@ -78,7 +78,7 @@
 |---|---|---|---|
 | **配网/复位键**（key0） | **P12** | 输入、内部上拉，**低电平=按下** | `app_key.c`：长按 ≥3 s → "long press, remove device"（`tuya_iot_wf_gw_unactive` 解绑重新配网）；短按只打印 "normal press"。产测 key 表 `{12,33}` → keyID `{0,1}` |
 | **AI 对话主按键**（key1） | **P33** | 输入、内部上拉，**低电平=按下** | `tuya_key` 驱动注册 1 个按键：`low_level_detect=1`，长按 3000 ms，连击间隔 200 ms，回调 `key_process`（NORMAL_KEY/SEQ_KEY/LONG_KEY）；进入低功耗时 `tkl_gpio_irq_enable(33)` 作为**唤醒源** |
-| **LED 指示灯** | **P8** | 推挽输出（初始化 level=0） | 产测 500 ms 闪烁；充电中、网络状态、低电量时写 1/0（推测高电平亮） |
+| **LED 指示灯** | **P8** | 推挽输出（初始化 level=0） | 产测 500 ms 闪烁；网络状态、低电量时写 1/0。**实测为低电平点亮**（2026-10-18；原推测高电平亮是错的，原厂初始化 level=0 即上电点亮）。另有一颗**充电指示灯由充电芯片直接驱动**，不经 GPIO，软件无法控制 |
 | **充电检测** | **P21** | 输入、浮空（外部应有上拉） | `is_charging = (read(P21) == 0)` → **低电平=正在充电**（典型充电 IC 的 CHRG 开漏脚）；日志 "%s, in charge"、"battery charging status change to %d" |
 | **电池电压检测** | **P28 = ADC4** | ADC，12 bit，**1/4 分压** | `tuya_ai_battery_init` 模式 0（ADC），`pin2adc(28)=通道4`。50 组×8 次去极值平均，码值 −50 校正，引脚电压 ×4 后查表（详见 4.2） |
 | **扬声器功放 PA 使能** | **P19** | 推挽输出，**高电平=开启** | `tkl_ai_init` 配置 `spk_gpio=19`、`spk_gpio_polarity=0`；`tkl_ai_start` 中 polarity=0 时输出高，stop 时写回 0；进入低功耗前置低、唤醒后置高 |

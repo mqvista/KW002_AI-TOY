@@ -26,6 +26,8 @@ typedef enum {
     XZ_SND_8,
     XZ_SND_9,
     XZ_SND_ACTIVATION,  /* "please add the device on xiaozhi.me with code ..." */
+    XZ_SND_CHARGER_REMOVED, /* "充电器已拔出" (tools/tts_prompts.py) */
+    XZ_SND_CHARGING,    /* "开始充电" (tools/tts_prompts.py) */
     XZ_SND_EXCLAMATION, /* error */
     XZ_SND_LOW_BATTERY,
     XZ_SND_POPUP,       /* short notification */

@@ -96,14 +96,14 @@ T5AI 平台默认把日志放在 UART1（P0/P1，`CONFIG_UART_PRINT_PORT=1`）�
 - 音频：`TDD_AUDIO_T5AI_T` 完全照搬原厂配置（AEC 开、16 kHz、`spk_pin=19`、polarity LOW）。
 - 按键：两个键都用**定时扫描 + 内部上拉**（`BUTTON_TIMER_SCAN_MODE` + `TUYA_GPIO_PULLUP`）。TuyaOpen 的中断模式在低电平有效时会配置成**下拉**，板上若没有外部上拉会一直误判按下；原厂也是上拉输入。
 - 电源：用 `tdd_power_soc`：电池 ADC 通道 4、分压比 4.0、原厂 12 点电量表；充电检测 P21 低有效；P33 为深睡唤醒源。
-- LED：P8 推挽，暂定高电平亮（待实测）。
+- LED：P8 推挽，**低电平亮**（2026-10-18 实测纠正，原定高电平亮）。充电灯是充电芯片直接驱动的独立 LED，与 P8 无关。
 
 参照 `TUYA_T5AI_CORE` 编写：
 ```c
 #define BOARD_SPEAKER_EN_PIN    TUYA_GPIO_NUM_19   // 功放使能，高有效
 #define BOARD_BUTTON_TALK_PIN   TUYA_GPIO_NUM_33   // 对话键，低有效
 #define BOARD_BUTTON_RESET_PIN  TUYA_GPIO_NUM_12   // 复位/配网键，低有效
-#define BOARD_LED_PIN           TUYA_GPIO_NUM_8    // LED（高有效，待验证）
+#define BOARD_LED_PIN           TUYA_GPIO_NUM_8    // LED（低有效，2026-10-18 实测）
 #define BOARD_CHARGE_DET_PIN    TUYA_GPIO_NUM_21   // 低电平=充电中
 #define BOARD_BAT_ADC_PIN       TUYA_GPIO_NUM_28   // ADC4，Vbat/4 分压
 
@@ -189,15 +189,33 @@ TDD_AUDIO_T5AI_T cfg = {
 - 模型对另外 3 个词有误报：实测待机时普通说话两次报出 `heytuya`(3)、`hituya`(4)，已在回调里只接受 `小智同学`(2)，其余仅打 DEBUG 日志。
 - 唤醒流程（参照 xiaozhi-esp32 `HandleWakeWordDetectedEvent`，其 `CONFIG_SEND_WAKE_WORD_DATA` 默认 y）：播放 `popup` 提示音 → 建立 WebSocket → 收到 `hello` 后先发 `{"type":"listen","state":"detect","text":"小智同学"}`（服务器据此回一句问候）→ 再发 `listen start (realtime)`。未上传唤醒词音频本身（ESP32 用于声纹，此处不需要）。`XZ_WAKE_SEND_DETECT=0` 时只响提示音直接聆听。
 - 平台代码小问题（未改）：`__kws_detect()` 内层查表循环复用了外层变量 `i`，命中未知 ID 时会跳过后续帧，对已知 4 个词无影响。
-- [ ] LED：低电慢闪 / 充电指示
-- [ ] 提示音：断网、低电（`low_battery.ogg` 已嵌入）
-- [ ] MCP 工具：音量调节、电量查询（`self.audio_speaker.set_volume`、`self.get_battery` 等）
+- [x] LED（P8，仅 idle 时）：平时灭，低电每 3 s 短闪 100 ms（`xz_ui.c`）。**不做充电指示**：充电灯是充电芯片直接驱动的独立 LED。
+  - 实测纠错：P8 实为**低电平点亮**。按高电平亮写时，拔掉充电线后软件发“灭”灯反而亮了（`led_set_status: 0`），据此改板级 `BOARD_LED_ACTIVE_LV = LOW`。此前 idle 时 P8 其实一直是亮的
+- [x] 低电提示音：≤20% 播一次 `low_battery.ogg`、≤10% 再播一次，只在 idle 且喇叭空闲时播；充电或回升到 ≥25% 后重新布防（实机尚未放电到 20% 验证）
+- [x] **插拔充电器语音提示**（2026-10-18 真机通过）：插入播「开始充电」、拔出播「充电器已拔出」，连续插拔 4 次各报一次
+  - 主循环轮询 `xz_battery` 缓存的充电状态（由 `pwr_chg` 线程回调更新），与上次播报状态不同且**稳定 800 ms** 才播报：插线瞬间 CHRG 会抖动（实测 1 s 内出现“断开→接通”两次回调）；不走事件队列，开机流程中丢事件也不会失步；开机时不报当前状态；小智正在说话时延后到说完再播
+  - 语音素材：xiaozhi-esp32 没有充电相关语音，用 Windows 自带 zh-CN 语音「Microsoft Huihui Desktop」（System.Speech，离线）合成，`soundfile`（libsndfile 1.2.2）编码为 Ogg/Opus 16 kHz 单声道 20 ms 帧，响度按 `wificonfig.ogg` 的有声段 RMS 对齐：`apps/xiaozhi_toy/tools/tts_prompts.py` → `tools/gen_prompts.py`
+  - 原有提示音格式（解析 OpusHead/TOC）：16 kHz 单声道，SILK WB 60 ms 帧（config 11）；播放器对帧长无要求
+- [ ] 提示音：断网
+- [x] **MCP 工具**（`xz_mcp.c`，hello 声明 `"features":{"mcp":true}`），工具名与参数与 xiaozhi-esp32 一致：
+  - `self.get_device_status` → `{"audio_speaker":{"volume":100},"battery":{"level":100,"charging":true,"voltage":4.01},"network":{"type":"wifi","ssid":"…","signal":"strong"}}`（电压是在用户问“电压是多少”答不上来后加的；先用 `voltage_mv`，小智答“4010 毫伏”，改成以伏为单位、两位小数）
+  - `self.audio_speaker.set_volume`（0~100，立即生效并存 KV `xz_vol`，开机读取）
+  - **语音调音量真机通过**（2026-10-18）：“把音量调小一点”→ 先 `get_device_status`（100）再 `set_volume 40`；“调到 10%”→ 10；“调到 100%”→ 100；“调到 80%”→ 80；“看一下当前音量”→ 80
+  - **语音查电量真机通过**（2026-10-18）：“你现在的电池电量是多少？”→ 服务器调用 `self.get_device_status` →“电量是满的喔，百分之百，而且还在充电中呢～”
+
+#### 电池 / MCP 实现要点（2026-10-18）
+- `xz_battery.c`：每 10 s 取一次 `tdl_power_battery_get_voltage`（板级已做 16 次平均 + efuse 校准），**只在喇叭停播 2 s 后采样**（100% 音量时功放会把电池电压拉低，避免误判低电），最近 6 次（1 分钟）平均后查原厂 12 点 OCV 表线性插值。
+- 充电中端电压偏高（实测插着充电 4005 mV → 100%），电量照常上报但不做低电判断；P21 无“充满”信号。
+- 充电状态变化由 `tdl_power_charger_on_event` 回调（在 `pwr_chg` 线程里），投递到主线程事件队列。
+- MCP 交互顺序（实测）：hello 后服务器立即发 `initialize`、`tools/list`，对话中按需 `tools/call`；回复包成 `{"session_id":…,"type":"mcp","payload":{JSON-RPC}}`，工具结果为 `{"content":[{"type":"text","text":"…"}],"isError":false}`。
+- 音量映射（平台 `tkl_ao_set_vol`）：0~30 → DAC 0~50%，30~100 → 50~70%；0 为静音。
+- TuyaOpen 日志格式化不支持 `%%`（输出成 `?`），日志里用 `pct`。
 
 ### 阶段 4：电池、功耗
 - [x] SoftAP 配网（阶段 2 已完成）
-- [ ] 电池：板级 `tdl_power` 已就绪（P28 ×4、原厂电量表、P21）；应用层低于 20% 播报
+- [x] 电池：电量采样/平滑、低电播报、低电 LED、语音查询（见阶段 3）
 - [ ] 低功耗：空闲超时关功放（P19 拉低），P33 唤醒
-- [ ] 音量记忆（KV）
+- [x] 音量记忆（KV `xz_vol`，语音设置后保存）
 
 ### 阶段 5：稳定性与调优
 - [ ] AEC/VAD 参数、麦克风增益、功放音量调校
@@ -221,7 +239,7 @@ TDD_AUDIO_T5AI_T cfg = {
 | T5 上 Opus 编码占 CPU/内存 | 使用 TuyaOpen 的 IPC 编码（跑在 CPU1）；降低复杂度 |
 | AEC 效果依赖原厂硬件回采设计 | 原厂已启用 AEC，问题不大；不理想时退回按键对话 |
 | 刷坏 / 授权区被覆盖 | 保留整片 dump，可随时刷回原厂 |
-| LED 极性、分压比为推断值 | 阶段 1 实测确认 |
+| LED 极性、分压比为推断值 | 分压比阶段 1 实测确认；LED 极性推断错误，2026-10-18 实测纠正为低电平亮 |
 
 ## 参考
 - TuyaOpen：https://github.com/tuya/TuyaOpen（板级示例 `boards/T5AI/TUYA_T5AI_CORE`）

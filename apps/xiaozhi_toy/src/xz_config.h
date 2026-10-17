@@ -34,7 +34,12 @@
 #define XZ_SAMPLE_RATE       16000
 #define XZ_OPUS_FRAME_MS     60
 #define XZ_OPUS_FRAME_SAMPLES (XZ_SAMPLE_RATE / 1000 * XZ_OPUS_FRAME_MS)
-#define XZ_SPEAKER_VOLUME    100
+#define XZ_SPEAKER_VOLUME    100 /* default; a volume set by voice is kept in KV */
+
+/* ---- battery (levels from the original firmware's OCV table) ---- */
+#define XZ_BAT_LOW_LEVEL      20  /* original firmware: "battery low, play alert" at <= 20 % */
+#define XZ_BAT_VERY_LOW_LEVEL 10  /* second reminder */
+#define XZ_BAT_RECOVER_LEVEL  25  /* re-arm the reminders above this (hysteresis) */
 
 /* ---- Wi-Fi provisioning (SoftAP portal) ---- */
 #define XZ_AP_SSID_PREFIX    "Xiaozhi-"

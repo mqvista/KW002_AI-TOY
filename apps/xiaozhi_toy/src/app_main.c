@@ -5,6 +5,10 @@
  * Keys: P33 talk  - press: start chat / interrupt the reply / end chat
  *       P12 reset - hold 3 s: "entering Wi-Fi configuration mode", reboot into the SoftAP portal
  * Voice: "小智同学" while idle starts a chat (offline wake word, xz_wake.c)
+ * MCP:   the server can read volume / battery / Wi-Fi and set the volume (xz_mcp.c)
+ * LED (P8) in idle: off, or a blip every 3 s when the battery is low (also announced).
+ *       Charging is shown by a separate LED driven by the charger chip.
+ * Charger plugged in / removed: "开始充电" / "充电器已拔出"
  */
 
 #include <stdarg.h>
@@ -24,7 +28,9 @@
 #include "board_com_api.h"
 
 #include "xz_audio.h"
+#include "xz_battery.h"
 #include "xz_config.h"
+#include "xz_mcp.h"
 #include "xz_ota.h"
 #include "xz_portal.h"
 #include "xz_settings.h"
@@ -73,6 +79,10 @@ static char sg_session_id[64] = {0};
 static BOOL_T sg_tts_stopped = FALSE;
 static BOOL_T sg_listen_started = FALSE; /* realtime: listen start sent for this session */
 static BOOL_T sg_wake_pending = FALSE;   /* channel opened by the wake word: report it after hello */
+static uint8_t sg_bat_alerted = 0;       /* low battery reminders given: 1 = low, 2 = very low */
+static int sg_chg_state = -1;            /* charger state last announced */
+static SYS_TIME_T sg_chg_since = 0;      /* charger state differs from the announced one since */
+static int sg_chg_prompt = -1;           /* XZ_SND_* waiting for the current reply to end */
 static SYS_TIME_T sg_state_since = 0;
 static char sg_auth[192];
 
@@ -85,6 +95,18 @@ static void __post_event(APP_EV_E type, char *text)
     if (OPRT_OK != tal_queue_post(sg_ev_queue, &ev, 0)) {
         tal_free(text);
     }
+}
+
+/* LED while idle: low battery blip only (charging has its own hardware LED) */
+static XZ_UI_E __idle_ui(void)
+{
+    XZ_BATTERY_T b;
+    BOOL_T known = xz_battery_get(&b);
+
+    if (known && b.level <= XZ_BAT_LOW_LEVEL) {
+        return XZ_UI_LOW_BATTERY;
+    }
+    return XZ_UI_OFF;
 }
 
 static void __set_state(APP_STATE_E st)
@@ -120,7 +142,7 @@ static void __set_state(APP_STATE_E st)
         break;
     case ST_IDLE:
     default:
-        xz_ui_set(XZ_UI_OFF);
+        xz_ui_set(__idle_ui());
         break;
     }
 }
@@ -341,6 +363,20 @@ static void __send_json(const char *fmt, ...)
     xz_ws_send_text(buf);
 }
 
+static void __mcp_send(const char *payload)
+{
+    size_t n = strlen(payload) + 96;
+    char *buf = tal_malloc(n);
+
+    if (NULL == buf) {
+        return;
+    }
+    snprintf(buf, n, "{\"session_id\":\"%s\",\"type\":\"mcp\",\"payload\":%s}", sg_session_id, payload);
+    PR_DEBUG(">> %.160s", buf);
+    xz_ws_send_text(buf);
+    tal_free(buf);
+}
+
 static void __start_listening(void)
 {
     sg_tts_stopped = FALSE;
@@ -392,7 +428,7 @@ static void __open_channel(void)
         __set_state(ST_IDLE);
         return;
     }
-    __send_json("{\"type\":\"hello\",\"version\":%d,\"features\":{},\"transport\":\"websocket\","
+    __send_json("{\"type\":\"hello\",\"version\":%d,\"features\":{\"mcp\":true},\"transport\":\"websocket\","
                 "\"audio_params\":{\"format\":\"opus\",\"sample_rate\":%d,\"channels\":1,\"frame_duration\":%d}}",
                 XZ_PROTOCOL_VERSION, XZ_SAMPLE_RATE, XZ_OPUS_FRAME_MS);
 }
@@ -437,6 +473,11 @@ static void __handle_server_json(const char *text)
             __set_state(ST_LISTENING);
         }
         sg_state_since = tal_system_get_millisecond();
+    } else if (strcmp(t, "mcp") == 0) {
+        cJSON *payload = cJSON_GetObjectItem(root, "payload");
+        if (cJSON_IsObject(payload)) {
+            xz_mcp_handle(payload, __mcp_send);
+        }
     } else if (strcmp(t, "llm") == 0) {
         cJSON *emo = cJSON_GetObjectItem(root, "emotion");
         PR_DEBUG("[emotion] %s", cJSON_IsString(emo) ? emo->valuestring : "");
@@ -500,17 +541,77 @@ static void __on_wifi_down(void)
     __set_state(ST_OFFLINE);
 }
 
+/*
+ * "开始充电" / "充电器已拔出". CHRG bounces for a moment when the cable goes in, so a new
+ * state is announced once it has been stable for CHG_SETTLE_MS; the prompt is held back
+ * while a reply is being spoken. Polls the cached state (updated by the power driver's
+ * charger thread), so nothing is lost while the boot flow drops events.
+ */
+#define CHG_SETTLE_MS 800
+
+static void __charger_prompt(void)
+{
+    SYS_TIME_T now = tal_system_get_millisecond();
+    XZ_BATTERY_T b;
+    BOOL_T known = xz_battery_get(&b);
+
+    if ((int)b.charging == sg_chg_state) {
+        sg_chg_since = 0;
+    } else if (0 == sg_chg_since) {
+        sg_chg_since = now;
+    } else if (now - sg_chg_since >= CHG_SETTLE_MS) {
+        sg_chg_since = 0;
+        sg_chg_state = (int)b.charging;
+        PR_NOTICE("charger %s, battery %u pct (%u mV)%s", b.charging ? "connected" : "disconnected", b.level, b.mv,
+                  known ? "" : " not measured yet");
+        if (b.charging) {
+            sg_bat_alerted = 0;
+        }
+        sg_chg_prompt = b.charging ? XZ_SND_CHARGING : XZ_SND_CHARGER_REMOVED;
+    }
+    if (sg_chg_prompt >= 0 && sg_state != ST_SPEAKING) {
+        xz_audio_play_sound((XZ_SOUND_E)sg_chg_prompt, FALSE);
+        sg_chg_prompt = -1;
+    }
+}
+
+/* Low battery reminders: once at <= 20 %, again at <= 10 %, only while idle and quiet. */
+static void __battery_check(void)
+{
+    XZ_BATTERY_T b;
+    uint8_t stage;
+
+    if (!xz_battery_get(&b)) {
+        return;
+    }
+    if (b.charging || b.level >= XZ_BAT_RECOVER_LEVEL) {
+        sg_bat_alerted = 0;
+        return;
+    }
+    stage = b.level <= XZ_BAT_VERY_LOW_LEVEL ? 2 : (b.level <= XZ_BAT_LOW_LEVEL ? 1 : 0);
+    if (stage > sg_bat_alerted && sg_state == ST_IDLE && !xz_audio_is_playing()) {
+        PR_WARN("battery low: %u pct (%u mV)", b.level, b.mv);
+        sg_bat_alerted = stage;
+        xz_audio_play_sound(XZ_SND_LOW_BATTERY, FALSE);
+    }
+}
+
 static void __periodic(void)
 {
     SYS_TIME_T now = tal_system_get_millisecond();
 
+    xz_battery_poll(xz_audio_is_playing());
+    __charger_prompt();
+    __battery_check();
+
     switch (sg_state) {
-#if XZ_WAKE_ENABLE
     case ST_IDLE:
+#if XZ_WAKE_ENABLE
         /* armed once the speaker is quiet, e.g. after the goodbye of a closed session */
         xz_wake_enable(!xz_audio_is_playing());
-        break;
 #endif
+        xz_ui_set(__idle_ui());
+        break;
     case ST_OPENING:
         if (now - sg_state_since > XZ_WS_HELLO_TIMEOUT_MS) {
             PR_ERR("no server hello");
@@ -572,6 +673,12 @@ static void __app_main(void)
     TUYA_CALL_ERR_LOG(board_register_hardware());
     xz_ui_init();
     TUYA_CALL_ERR_LOG(xz_audio_init());
+    xz_audio_set_volume((uint8_t)xz_settings_get_int(XZ_KEY_VOLUME, XZ_SPEAKER_VOLUME));
+    if (OPRT_OK == xz_battery_init(NULL)) {
+        XZ_BATTERY_T b;
+        xz_battery_get(&b);
+        sg_chg_state = (int)b.charging; /* only changes are announced, not the state at boot */
+    }
 #if XZ_WAKE_ENABLE
     if (OPRT_OK == xz_wake_init(__wake_cb)) {
         xz_audio_set_mic_tap(xz_wake_feed);
@@ -579,7 +686,7 @@ static void __app_main(void)
 #endif
     __keys_init();
     TUYA_CALL_ERR_LOG(xz_wifi_init(__wifi_link_cb));
-    PR_NOTICE("device %s, uuid %s", xz_wifi_mac_str(), xz_settings_uuid());
+    PR_NOTICE("device %s, uuid %s, volume %u", xz_wifi_mac_str(), xz_settings_uuid(), xz_audio_get_volume());
 
     /* 1. provisioning */
     if (xz_settings_get_flag(XZ_FLAG_FORCE_PORTAL)) {

@@ -20,6 +20,7 @@ typedef enum {
     XZ_UI_LISTENING,  /* steady on */
     XZ_UI_SPEAKING,   /* quick blink while the reply is played */
     XZ_UI_ERROR,      /* very fast blink */
+    XZ_UI_LOW_BATTERY,/* idle, battery low: short blip every 3 s (charging has its own hardware LED) */
 } XZ_UI_E;
 
 void xz_ui_init(void);

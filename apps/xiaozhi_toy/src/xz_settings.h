@@ -29,8 +29,13 @@ const char *xz_settings_uuid(void);
 BOOL_T xz_settings_get_flag(const char *key);
 void xz_settings_set_flag(const char *key, BOOL_T on);
 
+/** Integers kept in KV as decimal strings. */
+int xz_settings_get_int(const char *key, int def);
+void xz_settings_set_int(const char *key, int value);
+
 #define XZ_FLAG_FORCE_PORTAL  "xz_portal"   /* long press on the reset key: start the portal after reboot */
 #define XZ_FLAG_WIFI_UNTESTED "xz_wifi_new" /* credentials saved by the portal, not connected once yet */
+#define XZ_KEY_VOLUME         "xz_vol"      /* speaker volume set by voice (MCP), 0..100 */
 
 #ifdef __cplusplus
 }

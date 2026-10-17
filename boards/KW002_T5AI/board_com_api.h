@@ -25,7 +25,7 @@ extern "C" {
 #define BOARD_BUTTON_ACTIVE_LV   TUYA_GPIO_LEVEL_LOW
 
 #define BOARD_LED_PIN            TUYA_GPIO_NUM_8
-#define BOARD_LED_ACTIVE_LV      TUYA_GPIO_LEVEL_HIGH /* TODO: verify on hardware */
+#define BOARD_LED_ACTIVE_LV      TUYA_GPIO_LEVEL_LOW  /* verified: P8 low = LED on */
 
 #define BOARD_CHRG_PIN           TUYA_GPIO_NUM_21 /* charger CHRG, low = charging */
 #define BOARD_BAT_ADC_PIN        TUYA_GPIO_NUM_28 /* SARADC channel 4 */

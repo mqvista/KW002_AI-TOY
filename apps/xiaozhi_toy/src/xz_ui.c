@@ -48,6 +48,15 @@ void xz_ui_set(XZ_UI_E ui)
     case XZ_UI_ERROR:
         tdl_led_flash(sg_led, 80);
         break;
+    case XZ_UI_LOW_BATTERY: {
+        TDL_LED_BLINK_CFG_T blink = {.cnt = TDL_BLINK_FOREVER,
+                                     .start_stat = TDL_LED_ON,
+                                     .end_stat = TDL_LED_OFF,
+                                     .first_half_cycle_time = 100,
+                                     .latter_half_cycle_time = 2900};
+        tdl_led_blink(sg_led, &blink);
+        break;
+    }
     case XZ_UI_OFF:
     default:
         tdl_led_set_status(sg_led, TDL_LED_OFF);
