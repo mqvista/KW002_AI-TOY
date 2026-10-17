@@ -28,9 +28,20 @@
 
 ```powershell
 git clone --recurse-submodules https://github.com/mqvista/KW002_AI-TOY.git
-cd KW002_AI-TOY\TuyaOpen
-. .\export.ps1        # 首次会下载 uv / Python / 依赖
+cd KW002_AI-TOY
+powershell -ExecutionPolicy Bypass -File tools\setup.ps1   # 把 boards\ 接入 TuyaOpen（可重复执行）
+. .\TuyaOpen\export.ps1                                     # 首次会下载 uv / Python / 依赖
+
+# 编译硬件自检固件（首次会下载 T5AI 平台 SDK，约 700 MB）
+cd apps\hw_test
+tos.py build          # 输出 dist\hw_test_0.1.0\hw_test_QIO_0.1.0.bin
+tos.py flash          # 通过 UART0 (P10/P11) 刷写
+tos.py monitor        # 看日志
 ```
+
+| 应用 | 说明 |
+|---|---|
+| `apps/hw_test` | 硬件自检：LED 极性、按住 P33 录音松开回放、P12 播放测试音、每 5 s 打印电池/充电状态 |
 
 > 工程必须放在**本地磁盘**：TuyaOpen 的环境脚本需要创建目录链接，网络共享盘（SMB/NAS）不支持。
 

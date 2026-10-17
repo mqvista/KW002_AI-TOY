@@ -68,12 +68,24 @@
 ### 阶段 0：环境与安全网
 - [ ] 保留原厂完整 dump `tyutool_read_t5ai.bin`（含涂鸦授权区，用于随时刷回原厂；目前在 `Z:\tuya-T5`，不进公开仓库）；另存一份只读副本
 - [x] 建仓库 https://github.com/mqvista/KW002_AI-TOY，本地 `D:\tuya-T5`；TuyaOpen 作为子模块（commit `cdc064e`）
-- [ ] Windows 下 `export.ps1` 配置环境，`tos.py` 编译
-- [ ] 编译刷写一个最简例程（如 `examples/peripherals/gpio`），打通 **编译 → 刷写(UART0: P10/P11) → 看日志** 流程
+- [x] Windows 下 `export.ps1` 配置环境（uv + Python 3.12 + make，装在 `TuyaOpen\.tools`、`.venv`，已被子模块忽略）
+- [x] 编译 `examples/get-started/sample_project`（T5AI）成功；首次编译自动下载 T5AI 平台 SDK（约 700 MB）和 gcc-arm-none-eabi 10.3
+- [ ] 刷写并看日志，打通 **刷写(UART0: P10/P11) → 看日志** 流程
 - [ ] 验证可以用 tyutool 把原厂 dump 整片刷回（恢复路径可用）
 
+> 编译日志中的 `country code error: ...ip-api.com` 是 tos.py 查询所在国家失败，不影响编译。
+
 ### 阶段 1：新建板级支持 `KW002_T5AI` 并验证硬件
-板级代码放在仓库 `boards/KW002_T5AI/`，由 setup 脚本建目录链接到 `TuyaOpen/boards/T5AI/KW002_T5AI`，并给 `TuyaOpen/boards/T5AI/Kconfig` 打补丁注册这块板（补丁放 `patches/`，不改子模块提交）。
+- [x] 板级代码 `boards/KW002_T5AI/`（`kw002_t5ai.c`、`board_com_api.h`、`Kconfig`、`KW002_T5AI.config`）
+- [x] `tools/setup.ps1`：建目录链接 `TuyaOpen\boards\T5AI\KW002_T5AI` → `boards\KW002_T5AI`，往 `TuyaOpen\boards\T5AI\Kconfig` 插入板级选项，拷贝板级 config，写入子模块 `info/exclude`；可重复执行
+- [x] 硬件自检应用 `apps/hw_test` 编译通过（`hw_test_QIO_0.1.0.bin`）
+
+板级实现要点：
+- 音频：`TDD_AUDIO_T5AI_T` 完全照搬原厂配置（AEC 开、16 kHz、`spk_pin=19`、polarity LOW）。
+- 按键：两个键都用**定时扫描 + 内部上拉**（`BUTTON_TIMER_SCAN_MODE` + `TUYA_GPIO_PULLUP`）。TuyaOpen 的中断模式在低电平有效时会配置成**下拉**，板上若没有外部上拉会一直误判按下；原厂也是上拉输入。
+- 电源：用 `tdd_power_soc`：电池 ADC 通道 4、分压比 4.0、原厂 12 点电量表；充电检测 P21 低有效；P33 为深睡唤醒源。
+- LED：P8 推挽，暂定高电平亮（待实测）。
+
 参照 `TUYA_T5AI_CORE` 编写：
 ```c
 #define BOARD_SPEAKER_EN_PIN    TUYA_GPIO_NUM_19   // 功放使能，高有效
@@ -90,12 +102,11 @@ TDD_AUDIO_T5AI_T cfg = {
     .spk_pin = BOARD_SPEAKER_EN_PIN, .spk_pin_polarity = TUYA_GPIO_LEVEL_LOW,
 };
 ```
-逐项验证（用 TuyaOpen 现成例程）：
-- [ ] `examples/peripherals/audio_codecs`：麦克风录音 → 喇叭回放，确认功放、音量
-- [ ] `examples/peripherals/button`：P33、P12 按下/长按
-- [ ] `examples/peripherals/led`：P8 亮灭极性
-- [ ] `examples/peripherals/adc`：P28 电压 ×4 ≈ 万用表测得的电池电压
-- [ ] GPIO 读 P21：插/拔充电器电平变化
+用 `apps/hw_test` 逐项验证（刷入后看串口日志）：
+- [ ] 开机 LED 亮 2 s、灭 2 s，然后慢闪 → 确认 P8 极性
+- [ ] 按住 P33 录音（最长 5 s），松开回放 → 麦克风、功放 P19、喇叭、音量
+- [ ] 单击 P12 播放 1 kHz 测试音；长按 3 s 有日志
+- [ ] 每 5 s 打印电池电压/电量/充电状态 → 对比万用表，修正分压比；插拔充电器看 P21 状态变化
 - [ ] `examples/multimedia/audio_kws`：「你好小智」唤醒率
 
 ### 阶段 2：小智协议最小闭环（先写死 Wi-Fi）
