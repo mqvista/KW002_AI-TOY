@@ -116,6 +116,7 @@ TDD_AUDIO_T5AI_T cfg = {
 ```
 #### 首次上机调试记录（2026-10-17）
 - 刷写：`tos.py flash -p COM10`（tyutool 3.2.10，921600，2 MB 约 35 s）。CH343 的 RTS 接在模组复位脚上，tyutool 和抓日志脚本都能**自动复位**设备。芯片 ID `0x72360101`（BK7236）。
+- **坑：RTS = 复位**。pyserial / `tos.py monitor` / 默认串口助手打开串口时会拉 RTS，芯片被一直按在复位，设备“像没刷进去”、日志 0 字节（刷写后第一次抓日志 0 字节、用户反馈“固件没进去”都是这个原因）。改用 `tools/monitor.py`：打开串口前设 `rts=False, dtr=False`，`-r` 才主动拉一下 RTS 复位。
 - 日志：`BOARD_LOG_UART_PORT=0` 生效，UART0 @460800 能看到启动日志。崩溃转储原来仍在 UART1（`CONFIG_DUMP_UART_PRINT_PORT=1`），`tools/setup.ps1` 给平台 `build_example.py` 打了补丁，让崩溃转储也跟到 UART0。
 - **崩溃 1**：`MemFault`（CFSR 0x82，空指针），addr2line 定位到 `tal_sw_timer_create` → 应用没调 `tal_sw_timer_init()`。LED 驱动的闪烁依赖软件定时器。所有应用开头都要先 `tal_sw_timer_init(); tal_workq_init();`。
   - 定位方法：`arm-none-eabi-addr2line -f -i -e dist/<app>/debug/bk7258_ap/app.elf <PC> <LR>`（TuyaOpen 应用跑在 AP 核 = CPU1）。

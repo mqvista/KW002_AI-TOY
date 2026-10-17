@@ -35,9 +35,11 @@ powershell -ExecutionPolicy Bypass -File tools\setup.ps1   # 把 boards\ 接入 
 # 编译硬件自检固件（首次会下载 T5AI 平台 SDK，约 700 MB）
 cd apps\hw_test
 tos.py build          # 输出 dist\hw_test_0.1.0\hw_test_QIO_0.1.0.bin
-tos.py flash          # 通过 UART0 (P10/P11) 刷写
-tos.py monitor        # 看日志
+tos.py flash -p COM10                                       # 通过 UART0 (P10/P11) 刷写，自动复位
+..\..\TuyaOpen\.venv\Scripts\python.exe ..\..\tools\monitor.py -r   # 看日志（-r 先复位看启动过程）
 ```
+
+> **不要用 `tos.py monitor` 或默认设置的串口助手**：这根 USB-TTL（CH343）的 RTS 接在模组复位脚上，按默认方式打开串口会拉住 RTS，芯片一直处于复位、看起来像“固件没进去”。用 `tools/monitor.py`（打开串口时释放 RTS/DTR），或者在串口助手里把 RTS/DTR 都关掉。
 
 | 应用 | 说明 |
 |---|---|
