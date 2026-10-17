@@ -1,0 +1,49 @@
+/**
+ * @file xz_prompts.h
+ * @brief Embedded prompt sounds (Ogg/Opus, 16 kHz mono).
+ */
+
+#ifndef __XZ_PROMPTS_H__
+#define __XZ_PROMPTS_H__
+
+#include <stdint.h>
+#include <stddef.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Order must match tools/gen_prompts.py output (sorted file names). */
+typedef enum {
+    XZ_SND_0,
+    XZ_SND_1,
+    XZ_SND_2,
+    XZ_SND_3,
+    XZ_SND_4,
+    XZ_SND_5,
+    XZ_SND_6,
+    XZ_SND_7,
+    XZ_SND_8,
+    XZ_SND_9,
+    XZ_SND_ACTIVATION,  /* "please add the device on xiaozhi.me with code ..." */
+    XZ_SND_EXCLAMATION, /* error */
+    XZ_SND_LOW_BATTERY,
+    XZ_SND_POPUP,       /* short notification */
+    XZ_SND_SUCCESS,     /* ready */
+    XZ_SND_WELCOME,
+    XZ_SND_WIFICONFIG,  /* entering Wi-Fi configuration mode */
+    XZ_SND_MAX,
+} XZ_SOUND_E;
+
+typedef struct {
+    const uint8_t *data;
+    size_t len;
+} XZ_SOUND_T;
+
+extern const XZ_SOUND_T g_xz_sounds[XZ_SND_MAX];
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* __XZ_PROMPTS_H__ */
