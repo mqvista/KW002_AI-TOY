@@ -2,7 +2,10 @@
 Synthesize the device's own Chinese voice prompts (those xiaozhi-esp32 does not have) into
 assets/sounds/*.ogg, then run gen_prompts.py to embed them.
 
-    python tools/tts_prompts.py          (Windows only, needs: pip install soundfile numpy)
+    python tools/tts_prompts.py [--all]  (Windows only, needs: pip install soundfile numpy)
+
+Only prompts whose .ogg is missing are made (the Ogg serial number is random, so re-encoding
+changes every file); --all regenerates everything, e.g. after changing the voice.
     python tools/gen_prompts.py
 
 Voice: Windows built-in "Microsoft Huihui Desktop" (zh-CN, System.Speech), offline.
@@ -25,6 +28,10 @@ PROMPTS = {
     'charger_removed.ogg': '充电器已拔出',
     # provisioning: "请用手机连接热点，小智杠" + the SSID suffix spelled out (Xiaozhi-5C90)
     'connect_ap.ogg': '请用手机连接热点，小智杠',
+    # network
+    'net_lost.ogg': '网络已断开',
+    'net_restored.ogg': '网络已恢复',
+    'net_failed.ogg': '网络连接失败',
 }
 # single characters of the SSID suffix (MAC hex digits), same voice as connect_ap
 for _i, _t in enumerate('零一二三四五六七八九'):
@@ -79,7 +86,10 @@ def main():
     target = active_rms(ref)
     print(f'reference {REFERENCE}: {ref_rate} Hz, active rms {target:.3f}')
 
+    regen_all = '--all' in sys.argv[1:]
     for name, text in PROMPTS.items():
+        if not regen_all and os.path.exists(os.path.join(SOUND_DIR, name)):
+            continue
         wav = os.path.join(tempfile.gettempdir(), 'xz_tts_' + name.replace('.ogg', '.wav'))
         synthesize(text, wav)
         x, rate = sf.read(wav, dtype='float32')

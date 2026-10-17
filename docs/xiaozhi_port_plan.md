@@ -199,7 +199,11 @@ TDD_AUDIO_T5AI_T cfg = {
   - 主循环轮询 `xz_battery` 缓存的充电状态（由 `pwr_chg` 线程回调更新），与上次播报状态不同且**稳定 800 ms** 才播报：插线瞬间 CHRG 会抖动（实测 1 s 内出现“断开→接通”两次回调）；不走事件队列，开机流程中丢事件也不会失步；开机时不报当前状态；小智正在说话时延后到说完再播
   - 语音素材：xiaozhi-esp32 没有充电相关语音，用 Windows 自带 zh-CN 语音「Microsoft Huihui Desktop」（System.Speech，离线）合成，`soundfile`（libsndfile 1.2.2）编码为 Ogg/Opus 16 kHz 单声道 20 ms 帧，响度按 `wificonfig.ogg` 的有声段 RMS 对齐：`apps/xiaozhi_toy/tools/tts_prompts.py` → `tools/gen_prompts.py`
   - 原有提示音格式（解析 OpusHead/TOC）：16 kHz 单声道，SILK WB 60 ms 帧（config 11）；播放器对帧长无要求
-- [ ] 提示音：断网
+- [x] 网络提示音（2026-10-18 已实现，**断网/恢复待实测**）：开机连不上 Wi-Fi 播「网络连接失败」（取代原来的 exclamation）；运行中掉线停掉当前回答、播「网络已断开」（OFFLINE 期间重连失败的再次断开事件不重复播）；重连成功播「网络已恢复」回到 idle
+- [x] **LED 改 PWM**（2026-10-18 真机通过，呼吸效果用户确认）：P8 是 BK7258 PWM2（`gpio_map.h` 的 `GPIO_PWM_MAP_TABLE`），TuyaOpen 编号 `TUYA_PWM_NUM_6`（`tkl_pwm.c` 映射表 6→PWM_ID_2）；板级改用 `tdd_led_pwm`（低电平亮由驱动反转占空比，20 kHz 避开音频频段）。状态：待机呼吸（3 s 一周期，`tdl_led_breath`）、聆听常亮、说话闪烁、低电时待机改为每 3 s 短闪
+- [ ] **误唤醒**（待查）：2026-10-18 18:30:15 无人说唤醒词，附近视频在讲「90 百万赫兹…3.3 伏」时 KWS 报出「小智同学」(id 2)；随后 realtime 会话把视频人声当成用户输入。可选对策：唤醒后若数秒内无真人回应尽快关闭；唤醒音频送云端 ASR 二次确认（文本含“小智”才继续）；背景人声大时提高门槛（模型无置信度接口）
+- [ ] 漏唤醒（观察中）：18:20–18:22 待机、检测开启，两分钟内无任何检测（连其他词的误报都没有），同时段附近有很响的视频人声；安静后同一固件正常。若安静环境下复现，加“送入 KWS 的帧数 / 平均音量”统计定位
+- [ ] 提示音：断网（实测）
 - [x] **MCP 工具**（`xz_mcp.c`，hello 声明 `"features":{"mcp":true}`），工具名与参数与 xiaozhi-esp32 一致：
   - `self.get_device_status` → `{"audio_speaker":{"volume":100},"battery":{"level":100,"charging":true,"voltage":4.01},"network":{"type":"wifi","ssid":"…","signal":"strong"}}`（电压是在用户问“电压是多少”答不上来后加的；先用 `voltage_mv`，小智答“4010 毫伏”，改成以伏为单位、两位小数）
   - `self.audio_speaker.set_volume`（0~100，立即生效并存 KV `xz_vol`，开机读取）

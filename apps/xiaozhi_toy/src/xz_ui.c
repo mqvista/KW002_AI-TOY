@@ -48,6 +48,14 @@ void xz_ui_set(XZ_UI_E ui)
     case XZ_UI_ERROR:
         tdl_led_flash(sg_led, 80);
         break;
+    case XZ_UI_STANDBY: {
+        TDL_LED_BREATH_CFG_T breath = {.period_ms = 3000, .min_level = 0, .max_level = 100,
+                                       .cnt = TDL_BLINK_FOREVER};
+        if (OPRT_OK != tdl_led_breath(sg_led, &breath)) {
+            tdl_led_set_status(sg_led, TDL_LED_OFF); /* LED driver without dimming */
+        }
+        break;
+    }
     case XZ_UI_LOW_BATTERY: {
         TDL_LED_BLINK_CFG_T blink = {.cnt = TDL_BLINK_FOREVER,
                                      .start_stat = TDL_LED_ON,

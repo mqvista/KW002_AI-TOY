@@ -48,6 +48,9 @@ typedef enum {
     XZ_SND_SSID_F,
     XZ_SND_EXCLAMATION, /* error */
     XZ_SND_LOW_BATTERY,
+    XZ_SND_NET_FAILED,  /* "网络连接失败" (tools/tts_prompts.py) */
+    XZ_SND_NET_LOST,    /* "网络已断开" (tools/tts_prompts.py) */
+    XZ_SND_NET_RESTORED,/* "网络已恢复" (tools/tts_prompts.py) */
     XZ_SND_POPUP,       /* short notification */
     XZ_SND_SUCCESS,     /* ready */
     XZ_SND_WELCOME,

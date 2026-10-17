@@ -13,7 +13,8 @@ extern "C" {
 #endif
 
 typedef enum {
-    XZ_UI_OFF,        /* idle */
+    XZ_UI_OFF,
+    XZ_UI_STANDBY,    /* idle: breathing (P8 is PWM driven) */
     XZ_UI_PORTAL,     /* fast blink: Wi-Fi configuration mode */
     XZ_UI_CONNECTING, /* slow blink: joining Wi-Fi / server */
     XZ_UI_ACTIVATING, /* medium blink: waiting for the activation code */

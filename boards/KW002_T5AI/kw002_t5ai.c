@@ -13,7 +13,7 @@
 #include "board_com_api.h"
 
 #include "tdd_audio.h"
-#include "tdd_led_gpio.h"
+#include "tdd_led_pwm.h"
 #include "tdd_button_gpio.h"
 #if defined(AUDIO_CODEC_NAME)
 /* T5AI platform (tkl_audio.c): with the vendor VAD enabled inside the AEC pipeline,
@@ -134,13 +134,16 @@ static OPERATE_RET __board_register_led(void)
     OPERATE_RET rt = OPRT_OK;
 
 #if defined(LED_NAME)
-    TDD_LED_GPIO_CFG_T led_gpio;
+    TDD_LED_PWM_CFG_T led_cfg = {0};
 
-    led_gpio.pin   = BOARD_LED_PIN;
-    led_gpio.level = BOARD_LED_ACTIVE_LV;
-    led_gpio.mode  = TUYA_GPIO_PUSH_PULL;
+    led_cfg.pwm_ch       = BOARD_LED_PWM_CH;
+    led_cfg.frequency    = BOARD_LED_PWM_FREQ;
+    led_cfg.active_level = BOARD_LED_ACTIVE_LV; /* the driver inverts the duty for active low */
+    led_cfg.on_duty_pct  = 100;
+    led_cfg.duty_min_pct = 0;
+    led_cfg.duty_max_pct = 100; /* breathing uses the full range */
 
-    TUYA_CALL_ERR_RETURN(tdd_led_gpio_register(LED_NAME, &led_gpio));
+    TUYA_CALL_ERR_RETURN(tdd_led_pwm_register(LED_NAME, &led_cfg));
 #endif
 
     return rt;

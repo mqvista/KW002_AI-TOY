@@ -26,6 +26,10 @@ extern "C" {
 
 #define BOARD_LED_PIN            TUYA_GPIO_NUM_8
 #define BOARD_LED_ACTIVE_LV      TUYA_GPIO_LEVEL_LOW  /* verified: P8 low = LED on */
+/* P8 is BK7258 PWM2 (gpio_map.h GPIO_PWM_MAP_TABLE) = TuyaOpen TUYA_PWM_NUM_6 (tkl_pwm.c),
+ * so the LED is PWM driven: dimmable, supports tdl_led_breath() */
+#define BOARD_LED_PWM_CH         TUYA_PWM_NUM_6
+#define BOARD_LED_PWM_FREQ       20000 /* Hz, above the audio band: no whine from the PWM */
 
 #define BOARD_CHRG_PIN           TUYA_GPIO_NUM_21 /* charger CHRG, low = charging */
 #define BOARD_BAT_ADC_PIN        TUYA_GPIO_NUM_28 /* SARADC channel 4 */

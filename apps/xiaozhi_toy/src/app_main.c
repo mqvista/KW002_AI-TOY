@@ -7,9 +7,11 @@
  *       P12 reset - hold 3 s: "entering Wi-Fi configuration mode", reboot into the SoftAP portal
  * Voice: "小智同学" while idle starts a chat (offline wake word, xz_wake.c)
  * MCP:   the server can read volume / battery / Wi-Fi and set the volume (xz_mcp.c)
- * LED (P8) in idle: off, or a blip every 3 s when the battery is low (also announced).
+ * LED (P8, PWM): idle = breathing (a blip every 3 s instead when the battery is low),
+ *       listening = on, speaking = blinking.
  *       Charging is shown by a separate LED driven by the charger chip.
  * Charger plugged in / removed: "开始充电" / "充电器已拔出"
+ * Network: "网络连接失败" (cannot join at boot), "网络已断开" / "网络已恢复" (link lost / back)
  */
 
 #include <stdarg.h>
@@ -98,7 +100,7 @@ static void __post_event(APP_EV_E type, char *text)
     }
 }
 
-/* LED while idle: low battery blip only (charging has its own hardware LED) */
+/* LED while idle: breathing, or the low battery blip (charging has its own hardware LED) */
 static XZ_UI_E __idle_ui(void)
 {
     XZ_BATTERY_T b;
@@ -107,7 +109,7 @@ static XZ_UI_E __idle_ui(void)
     if (known && b.level <= XZ_BAT_LOW_LEVEL) {
         return XZ_UI_LOW_BATTERY;
     }
-    return XZ_UI_OFF;
+    return XZ_UI_STANDBY;
 }
 
 static void __set_state(APP_STATE_E st)
@@ -300,12 +302,12 @@ static void __connect_wifi(void)
             /* just provisioned and never connected: probably a wrong password */
             PR_ERR("new wifi credentials do not work, back to the portal");
             xz_settings_set_flag(XZ_FLAG_WIFI_UNTESTED, FALSE);
-            xz_audio_play_sound(XZ_SND_EXCLAMATION, TRUE);
+            xz_audio_play_sound(XZ_SND_NET_FAILED, TRUE);
             xz_settings_set_flag(XZ_FLAG_FORCE_PORTAL, TRUE);
             tal_system_reset();
         }
         xz_ui_set(XZ_UI_ERROR);
-        xz_audio_play_sound(XZ_SND_EXCLAMATION, TRUE);
+        xz_audio_play_sound(XZ_SND_NET_FAILED, TRUE);
         PR_WARN("wifi not available, retry in %u s (hold the reset key 3 s to reconfigure)", backoff / 1000);
         __sleep_events(backoff);
         backoff = backoff < 60000 ? backoff * 2 : 60000;
@@ -568,10 +570,25 @@ static void __on_wake_word(void)
 
 static void __on_wifi_down(void)
 {
+    if (ST_OFFLINE == sg_state) {
+        return; /* failed reconnect attempts report "disconnected" again */
+    }
     PR_WARN("wifi link down");
     xz_audio_capture(FALSE, NULL);
     xz_ws_close();
+    sg_session_id[0] = '\0';
+    sg_listen_started = FALSE;
+    sg_wake_pending = FALSE;
     __set_state(ST_OFFLINE);
+    xz_audio_stop_playback(); /* the rest of a reply will not come */
+    xz_audio_play_sound(XZ_SND_NET_LOST, FALSE);
+}
+
+static void __on_wifi_back(void)
+{
+    PR_NOTICE("wifi link back");
+    __set_state(ST_IDLE);
+    xz_audio_play_sound(XZ_SND_NET_RESTORED, FALSE);
 }
 
 /*
@@ -665,14 +682,14 @@ static void __periodic(void)
         break;
     case ST_OFFLINE:
         if (xz_wifi_is_connected()) {
-            __set_state(ST_IDLE);
+            __on_wifi_back();
         } else if (now - sg_state_since > 15000) {
             char ssid[XZ_SSID_MAX + 1] = {0};
             char passwd[XZ_PASSWD_MAX + 1] = {0};
             xz_settings_get_wifi(ssid, passwd);
             sg_state_since = now;
             if (OPRT_OK == xz_wifi_connect(ssid, passwd, XZ_WIFI_CONNECT_TIMEOUT_MS)) {
-                __set_state(ST_IDLE);
+                __on_wifi_back();
             }
         }
         break;
