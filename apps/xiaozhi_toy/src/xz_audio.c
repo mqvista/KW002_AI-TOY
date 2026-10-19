@@ -15,6 +15,7 @@
 #include "tdl_audio_manage.h"
 #include "opus.h"
 
+#include "board_com_api.h"
 #include "xz_audio.h"
 #include "xz_config.h"
 
@@ -54,8 +55,13 @@ static QUEUE_HANDLE sg_play_queue = NULL;
 static OpusDecoder *sg_decoder = NULL;
 static MUTEX_HANDLE sg_play_mutex = NULL;
 static volatile uint32_t sg_play_pending = 0;   /* packets queued, not yet written */
-static volatile SYS_TIME_T sg_play_end_ms = 0;  /* projected end of what was written */
+static volatile uint32_t sg_play_end_ms    = 0;   /* projected end of what was written */
 static volatile BOOL_T sg_flush = FALSE;
+static volatile BOOL_T   sg_pa_on          = FALSE;
+static volatile BOOL_T   sg_play_end_valid = FALSE;
+static volatile BOOL_T   sg_paused         = FALSE;
+static volatile BOOL_T   sg_pause_ack      = FALSE;
+static BOOL_T            sg_device_open    = FALSE;
 
 static THREAD_HANDLE sg_enc_thread = NULL;
 static THREAD_HANDLE sg_play_thread = NULL;
@@ -67,6 +73,9 @@ static void __mic_cb(TDL_AUDIO_FRAME_FORMAT_E type, TDL_AUDIO_STATUS_E status, u
 {
     (void)type;
     (void)status;
+    if (sg_paused) {
+        return;
+    }
     if (sg_mic_tap) {
         sg_mic_tap(data, len);
     }
@@ -149,55 +158,126 @@ static void __play_free_all(void)
     }
 }
 
+/* The playback worker alone owns PA transitions and the audio write path. */
+static OPERATE_RET __speaker_set(BOOL_T on)
+{
+    if (on == sg_pa_on) {
+        return OPRT_OK;
+    }
+    OPERATE_RET rt = board_speaker_set(on);
+    if (OPRT_OK == rt) {
+        sg_pa_on = on;
+        PR_DEBUG("amplifier %s", on ? "on" : "off");
+        if (on) {
+            tal_system_sleep(XZ_PA_START_MS);
+        }
+    } else {
+        PR_ERR("amplifier switch failed: %d", rt);
+    }
+    return rt;
+}
+
+static BOOL_T __pcm_draining(uint32_t now)
+{
+    return sg_play_end_valid && (int32_t)((uint32_t)sg_play_end_ms - now) > 0;
+}
+
+static void __speaker_idle_poll(void)
+{
+    uint32_t now = (uint32_t)tal_system_get_millisecond();
+    if (sg_volume == 0) {
+        __speaker_set(FALSE);
+    } else if (__pcm_draining(now)) {
+        __speaker_set(TRUE); /* also handles unmuting while PCM is still buffered */
+    }
+    if (sg_play_end_valid && (int32_t)(now - (uint32_t)sg_play_end_ms) >= (int32_t)XZ_PA_TAIL_MS) {
+        sg_play_end_valid = FALSE;
+    }
+    if (sg_play_pending == 0 && !sg_play_end_valid) {
+        __speaker_set(FALSE);
+    }
+}
+
+static void __play_step(int16_t *pcm)
+{
+    PLAY_PKT_T *pkt = NULL;
+    if (sg_paused) {
+        if (!sg_pause_ack) {
+            __play_free_all();
+            __speaker_set(FALSE);
+            sg_play_end_valid = FALSE;
+            sg_flush = FALSE;
+            sg_pause_ack      = TRUE;
+        }
+        tal_system_sleep(20);
+        return;
+    }
+    sg_pause_ack = FALSE;
+    if (sg_flush) {
+        __play_free_all();
+        tdl_audio_play_stop(sg_audio);
+        opus_decoder_ctl(sg_decoder, OPUS_RESET_STATE);
+        sg_play_end_valid = FALSE;
+        __speaker_set(FALSE);
+        sg_flush = FALSE;
+    }
+
+    __speaker_idle_poll();
+    if (OPRT_OK != tal_queue_fetch(sg_play_queue, &pkt, 50)) {
+        __speaker_idle_poll();
+        return;
+    }
+    if (pkt->len == 0) {
+        opus_decoder_ctl(sg_decoder, OPUS_RESET_STATE);
+    } else if (!sg_flush && !sg_paused) {
+        int samples = opus_decode(sg_decoder, pkt->data, pkt->len, pcm, DEC_MAX_SAMPLES, 0);
+        if (samples > 0) {
+            OPERATE_RET rt = __speaker_set(sg_volume != 0);
+            if (OPRT_OK == rt) {
+                uint32_t now = (uint32_t)tal_system_get_millisecond();
+                uint32_t dur = (uint32_t)samples * 1000U / XZ_SAMPLE_RATE;
+                uint32_t end = __pcm_draining(now) ? (uint32_t)sg_play_end_ms : now;
+                end += dur;
+                rt  = tdl_audio_play(sg_audio, (uint8_t *)pcm, (uint32_t)samples * sizeof(int16_t));
+                now = (uint32_t)tal_system_get_millisecond();
+                if (OPRT_OK == rt) {
+                    /* A blocked write may outlive our projection. Leave a full frame
+                     * of margin rather than switching PA off on newly accepted PCM. */
+                    sg_play_end_ms    = (int32_t)(end - now) > 0 ? end : now + dur;
+                    sg_play_end_valid = TRUE;
+                }
+            }
+            if (OPRT_OK != rt) {
+                PR_ERR("speaker write failed: %d", rt);
+                __play_free_all();
+                sg_play_end_valid = FALSE;
+                __speaker_set(FALSE);
+            }
+        } else {
+            PR_WARN("opus_decode error %d (len %u)", samples, pkt->len);
+        }
+    }
+    tal_free(pkt);
+    __pending_add(-1);
+    __speaker_idle_poll();
+}
+
 static void __play_task(void *arg)
 {
     int16_t *pcm = tkl_system_psram_malloc(DEC_MAX_SAMPLES * sizeof(int16_t));
-    PLAY_PKT_T *pkt = NULL;
-
     (void)arg;
     if (!pcm) {
         PR_ERR("decoder buffer alloc failed");
         return;
     }
-
     while (1) {
-        if (sg_flush) {
-            __play_free_all();
-            tdl_audio_play_stop(sg_audio);
-            opus_decoder_ctl(sg_decoder, OPUS_RESET_STATE);
-            sg_play_end_ms = tal_system_get_millisecond();
-            sg_flush = FALSE;
-        }
-
-        if (OPRT_OK != tal_queue_fetch(sg_play_queue, &pkt, 50)) {
-            continue;
-        }
-
-        if (pkt->len == 0) {
-            opus_decoder_ctl(sg_decoder, OPUS_RESET_STATE);
-        } else if (!sg_flush) {
-            int samples = opus_decode(sg_decoder, pkt->data, pkt->len, pcm, DEC_MAX_SAMPLES, 0);
-            if (samples > 0) {
-                SYS_TIME_T now = tal_system_get_millisecond();
-                uint32_t dur = (uint32_t)samples * 1000 / XZ_SAMPLE_RATE;
-                if (sg_play_end_ms < now) {
-                    sg_play_end_ms = now;
-                }
-                sg_play_end_ms += dur;
-                tdl_audio_play(sg_audio, (uint8_t *)pcm, (uint32_t)samples * sizeof(int16_t));
-            } else {
-                PR_WARN("opus_decode error %d (len %u)", samples, pkt->len);
-            }
-        }
-        tal_free(pkt);
-        __pending_add(-1);
+        __play_step(pcm);
     }
 }
 
 static void __play_push(const uint8_t *data, uint16_t len)
 {
     PLAY_PKT_T *pkt = tal_malloc(sizeof(PLAY_PKT_T) + len);
-
     if (NULL == pkt) {
         PR_ERR("play packet alloc failed");
         return;
@@ -206,12 +286,21 @@ static void __play_push(const uint8_t *data, uint16_t len)
     if (len) {
         memcpy(pkt->data, data, len);
     }
-    __pending_add(1);
+    tal_mutex_lock(sg_play_mutex);
+    /* Serialize the gate with queue insertion. A sleep request must prevent a
+     * producer from adding another packet after the worker acknowledged pause. */
+    if (sg_paused) {
+        tal_mutex_unlock(sg_play_mutex);
+        tal_free(pkt);
+        return;
+    }
+    sg_play_pending++;
     if (OPRT_OK != tal_queue_post(sg_play_queue, &pkt, 0)) {
-        __pending_add(-1);
+        sg_play_pending--;
         tal_free(pkt);
         PR_WARN("play queue full, packet dropped");
     }
+    tal_mutex_unlock(sg_play_mutex);
 }
 
 /* Split an Ogg/Opus file into Opus packets and queue them (skips OpusHead/OpusTags). */
@@ -280,6 +369,7 @@ OPERATE_RET xz_audio_init(void)
 
     TUYA_CALL_ERR_RETURN(tdl_audio_find(AUDIO_CODEC_NAME, &sg_audio));
     TUYA_CALL_ERR_RETURN(tdl_audio_open(sg_audio, __mic_cb));
+    sg_device_open = TRUE;
     TUYA_CALL_ERR_LOG(tdl_audio_volume_set(sg_audio, sg_volume));
 
     THREAD_CFG_T enc_cfg = {.stackDepth = 40 * 1024, .priority = THREAD_PRIO_2, .thrdname = "xz_enc"};
@@ -307,7 +397,7 @@ void xz_audio_set_mic_tap(XZ_AUDIO_TAP_CB cb)
 void xz_audio_set_volume(uint8_t volume)
 {
     sg_volume = volume > 100 ? 100 : volume;
-    if (sg_audio) {
+    if (sg_audio && sg_device_open && !sg_paused) {
         tdl_audio_volume_set(sg_audio, sg_volume);
     }
 }
@@ -327,7 +417,7 @@ void xz_audio_feed_opus(const uint8_t *data, uint32_t len)
 
 BOOL_T xz_audio_is_playing(void)
 {
-    return sg_play_pending > 0 || sg_flush || tal_system_get_millisecond() < sg_play_end_ms;
+    return sg_play_pending > 0 || sg_flush || sg_pa_on || __pcm_draining((uint32_t)tal_system_get_millisecond());
 }
 
 void xz_audio_wait_idle(uint32_t timeout_ms)
@@ -367,4 +457,50 @@ void xz_audio_stop_playback(void)
     for (int i = 0; i < 50 && sg_flush; i++) {
         tal_system_sleep(10);
     }
+}
+
+/* Stop producers, wait for the playback worker to acknowledge, then close the
+ * codec. No tdl_audio_play() can overlap with tdl_audio_close(). */
+OPERATE_RET xz_audio_suspend(void)
+{
+    xz_audio_capture(FALSE, NULL);
+    tal_mutex_lock(sg_play_mutex);
+    sg_paused = TRUE;
+    tal_mutex_unlock(sg_play_mutex);
+    uint32_t start = (uint32_t)tal_system_get_millisecond();
+    while (!sg_pause_ack) {
+        if ((uint32_t)((uint32_t)tal_system_get_millisecond() - start) >= 1500U) {
+            return OPRT_TIMEOUT;
+        }
+        tal_system_sleep(10);
+    }
+    if (sg_device_open) {
+        OPERATE_RET rt = tdl_audio_close(sg_audio);
+        if (OPRT_OK != rt) {
+            return rt;
+        }
+        sg_device_open = FALSE;
+    }
+    return OPRT_OK;
+}
+
+OPERATE_RET xz_audio_resume(void)
+{
+    OPERATE_RET rt = OPRT_OK;
+    if (!sg_device_open) {
+        TUYA_CALL_ERR_RETURN(tdl_audio_open(sg_audio, __mic_cb));
+        sg_device_open = TRUE;
+        TUYA_CALL_ERR_RETURN(tdl_audio_volume_set(sg_audio, sg_volume));
+    }
+    tal_mutex_lock(sg_play_mutex);
+    sg_paused = FALSE;
+    tal_mutex_unlock(sg_play_mutex);
+    uint32_t start = (uint32_t)tal_system_get_millisecond();
+    while (sg_pause_ack) {
+        if ((uint32_t)((uint32_t)tal_system_get_millisecond() - start) >= 1500U) {
+            return OPRT_TIMEOUT;
+        }
+        tal_system_sleep(10);
+    }
+    return OPRT_OK;
 }

@@ -1,6 +1,6 @@
 /**
  * @file xz_certs.c
- * @brief Root CA for api.tenclass.net (OTA + WebSocket).
+ * @brief Root CAs for XiaoZhi and the public IPv4 lookup service.
  *
  * Chain: api.tenclass.net -> GeoTrust G2 TLS CN RSA4096 SHA256 2022 CA1 -> DigiCert Global Root G2
  * (root valid until 2038-01-15). Pin the root, the server certificate is renewed regularly.
@@ -31,4 +31,23 @@ const char g_xz_root_ca_pem[] =
     "8rGOmaFvE7FBcf6IKshPECBV1/MUReXgRPTqh5Uykw7+U0b6LJ3/iyK5S9kJRaTe\n"
     "pLiaWN0bfVKfjllDiIGknibVb63dDcY3fe0Dkhvld1927jyNxF1WW6LZZm6zNTfl\n"
     "MrY=\n"
+    "-----END CERTIFICATE-----\n";
+
+/* GTS Root R4, verified for api.ipify.org on 2026-10-19.
+ * Source: https://pki.goog/repo/certs/gtsr4.pem
+ * SHA-256: 349dfa4058c5e263123b398ae795573c4e1313c83fe68f93556cd5e8031b3c7d
+ * Valid until 2036-06-22. Keep peer and hostname verification enabled. */
+const char g_xz_public_ip_ca_pem[] =
+    "-----BEGIN CERTIFICATE-----\n"
+    "MIICCTCCAY6gAwIBAgINAgPlwGjvYxqccpBQUjAKBggqhkjOPQQDAzBHMQswCQYD\n"
+    "VQQGEwJVUzEiMCAGA1UEChMZR29vZ2xlIFRydXN0IFNlcnZpY2VzIExMQzEUMBIG\n"
+    "A1UEAxMLR1RTIFJvb3QgUjQwHhcNMTYwNjIyMDAwMDAwWhcNMzYwNjIyMDAwMDAw\n"
+    "WjBHMQswCQYDVQQGEwJVUzEiMCAGA1UEChMZR29vZ2xlIFRydXN0IFNlcnZpY2Vz\n"
+    "IExMQzEUMBIGA1UEAxMLR1RTIFJvb3QgUjQwdjAQBgcqhkjOPQIBBgUrgQQAIgNi\n"
+    "AATzdHOnaItgrkO4NcWBMHtLSZ37wWHO5t5GvWvVYRg1rkDdc/eJkTBa6zzuhXyi\n"
+    "QHY7qca4R9gq55KRanPpsXI5nymfopjTX15YhmUPoYRlBtHci8nHc8iMai/lxKvR\n"
+    "HYqjQjBAMA4GA1UdDwEB/wQEAwIBhjAPBgNVHRMBAf8EBTADAQH/MB0GA1UdDgQW\n"
+    "BBSATNbrdP9JNqPV2Py1PsVq8JQdjDAKBggqhkjOPQQDAwNpADBmAjEA6ED/g94D\n"
+    "9J+uHXqnLrmvT/aDHQ4thQEd0dlq7A/Cr8deVl5c1RxYIigL9zC2L7F8AjEA8GE8\n"
+    "p/SgguMh1YQdc4acLa/KNJvxn7kjNuK8YAOdgLOaVsjh4rsUecrNIdSUtUlD\n"
     "-----END CERTIFICATE-----\n";

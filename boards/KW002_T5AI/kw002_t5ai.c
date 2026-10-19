@@ -9,6 +9,7 @@
 #include "tuya_cloud_types.h"
 
 #include "tal_api.h"
+#include "tkl_gpio.h"
 
 #include "board_com_api.h"
 
@@ -71,6 +72,52 @@ static const TDL_POWER_OCV_PT_T s_ocv[] = {
 /***********************************************************
 ***********************function define**********************
 ***********************************************************/
+static BOOL_T s_manual_pa = FALSE;
+
+OPERATE_RET board_audio_manual_pa_enable(void)
+{
+    TUYA_GPIO_BASE_CFG_T cfg = {
+        .direct = TUYA_GPIO_OUTPUT,
+        .mode   = TUYA_GPIO_PULLDOWN,
+        .level  = TUYA_GPIO_LEVEL_LOW,
+    };
+    OPERATE_RET rt = tkl_gpio_init(BOARD_SPEAKER_EN_PIN, &cfg);
+    if (OPRT_OK == rt) {
+        s_manual_pa = TRUE;
+    }
+    return rt;
+}
+
+OPERATE_RET board_speaker_set(BOOL_T on)
+{
+    return tkl_gpio_write(BOARD_SPEAKER_EN_PIN, on ? TUYA_GPIO_LEVEL_HIGH : TUYA_GPIO_LEVEL_LOW);
+}
+
+BOOL_T board_sleep_inputs_ready(void)
+{
+    TUYA_GPIO_LEVEL_E talk, reset, charge;
+    if (OPRT_OK != tkl_gpio_read(BOARD_BUTTON_TALK_PIN, &talk) ||
+        OPRT_OK != tkl_gpio_read(BOARD_BUTTON_RESET_PIN, &reset) || OPRT_OK != tkl_gpio_read(BOARD_CHRG_PIN, &charge)) {
+        return FALSE;
+    }
+    return talk == TUYA_GPIO_LEVEL_HIGH && reset == TUYA_GPIO_LEVEL_HIGH && charge == TUYA_GPIO_LEVEL_HIGH;
+}
+
+void board_prepare_sleep_pins(void)
+{
+    TUYA_GPIO_BASE_CFG_T cfg = {
+        .direct = TUYA_GPIO_OUTPUT,
+        .mode   = TUYA_GPIO_PULLDOWN,
+        .level  = TUYA_GPIO_LEVEL_LOW,
+    };
+    tkl_gpio_init(BOARD_SPEAKER_EN_PIN, &cfg);
+    cfg.mode  = TUYA_GPIO_PULLUP;
+    cfg.level = TUYA_GPIO_LEVEL_HIGH;
+    tkl_gpio_init(BOARD_LED_PIN, &cfg);
+    cfg.direct = TUYA_GPIO_INPUT;
+    tkl_gpio_init(BOARD_BUTTON_TALK_PIN, &cfg);
+}
+
 static OPERATE_RET __board_register_audio(void)
 {
     OPERATE_RET rt = OPRT_OK;
@@ -88,7 +135,9 @@ static OPERATE_RET __board_register_audio(void)
     cfg.channel     = TKL_AUDIO_CHANNEL_MONO;
 
     cfg.spk_sample_rate  = TKL_AUDIO_SAMPLE_16K;
-    cfg.spk_pin          = BOARD_SPEAKER_EN_PIN;
+    /* T5 tkl_audio ignores PA pins >= 56. Leave P19 entirely to the application
+     * in manual mode, so audio initialization never opens the amplifier. */
+    cfg.spk_pin          = s_manual_pa ? TUYA_GPIO_NUM_MAX : BOARD_SPEAKER_EN_PIN;
     cfg.spk_pin_polarity = TUYA_GPIO_LEVEL_LOW; /* polarity 0 -> PA driven high while playing */
 
     /* continuous mic stream: wake word / VAD are done by the application */

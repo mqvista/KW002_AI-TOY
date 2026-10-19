@@ -47,6 +47,16 @@ extern "C" {
  */
 OPERATE_RET board_register_hardware(void);
 
+/** Select before board registration. hw_test keeps the platform's original PA control. */
+OPERATE_RET board_audio_manual_pa_enable(void);
+OPERATE_RET board_speaker_set(BOOL_T on);
+
+/** TRUE only when both keys are released and CHRG is inactive; read errors return FALSE. */
+BOOL_T board_sleep_inputs_ready(void);
+
+/** May run in early boot before board registration, on the way into deep sleep. */
+void board_prepare_sleep_pins(void);
+
 #ifdef __cplusplus
 }
 #endif

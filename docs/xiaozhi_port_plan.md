@@ -190,7 +190,9 @@ TDD_AUDIO_T5AI_T cfg = {
 - 喂数据：TuyaOpen 的 `ai_components` 通过 `tkl_vad.c` 在 AEC 线程里挂 speex AES + RNN VAD，再调用 `tkl_kws_feed_with_vad()`（只在 VAD 判为语音时送检）。本应用已从 T5 音频驱动拿到 AEC 后的 16 kHz 帧，因此不挂那条链路，而是在麦克风回调里直接 `tkl_kws_feed_with_vad(pcm, len, 1)`（VAD 恒为 1，每 100 ms 唤醒一次 `kws_task` 检测）。`tkl_kws_feed_with_vad` 未在公开头文件声明，需 `extern`。
 - 只在 **idle 且喇叭不出声** 时开启检测（离开 idle 立即关；idle 时由 `__periodic` 按 `!xz_audio_is_playing()` 开启，避免会话被服务器关闭后告别语还在播时自唤醒）：对话中 realtime 模式本来就能直接说话插话。`tkl_kws_disable/enable` 会清空环形缓冲，旧音频不会延迟触发。
 - 模型对另外 3 个词有误报：实测待机时普通说话两次报出 `heytuya`(3)、`hituya`(4)，已在回调里只接受 `小智同学`(2)，其余仅打 DEBUG 日志。
-- 唤醒流程（参照 xiaozhi-esp32 `HandleWakeWordDetectedEvent`，其 `CONFIG_SEND_WAKE_WORD_DATA` 默认 y）：播放 `popup` 提示音 → 建立 WebSocket → 收到 `hello` 后先发 `{"type":"listen","state":"detect","text":"小智同学"}`（服务器据此回一句问候）→ 再发 `listen start (realtime)`。未上传唤醒词音频本身（ESP32 用于声纹，此处不需要）。`XZ_WAKE_SEND_DETECT=0` 时只响提示音直接聆听。
+- 唤醒流程：播放 `popup` 提示音 → 建立 WebSocket → 收到 `hello` 后直接发 `listen start (realtime)` 进入聆听。按用户要求，默认 `XZ_WAKE_SEND_DETECT=0`，不再发送触发服务器语音问候的 `listen detect`，唤醒后只响提示音。用户随后提问仍正常语音回答；未上传唤醒词音频本身。需要恢复旧问候流程时可将该配置改为 1。
+
+  提示音唤醒版本已完整编译打包通过，日志 `apps/xiaozhi_toy/.build/wake_chime_only_build.log`。检查最终 AP ELF，触发问候的 `listen detect` 帧已移除，`listen start (realtime)` 保留。当前同名 QIO 固件 2,933,440 字节，SHA-256 `1a15632fbb0eb29e58a628fd5638c16a0f6337d6f0ead8421acc9af1ae192d20`，已烧录。共写入 717 个扇区，按用户要求未做回读校验；日志 `wake_chime_write_only.log`。`wake_chime_boot.log` 已确认音频初始化、Wi-Fi 获取 IP、进入 idle 和唤醒词检测就绪。用户随后要求以后烧录不恢复 Flash 保护状态，本次该步骤在消息到达前已完成；未来流程跳过此步骤。串口退出时释放 RTS/DTR。
 - 平台代码小问题（未改）：`__kws_detect()` 内层查表循环复用了外层变量 `i`，命中未知 ID 时会跳过后续帧，对已知 4 个词无影响。
 - [x] LED（P8，仅 idle 时）：平时灭，低电每 3 s 短闪 100 ms（`xz_ui.c`）。**不做充电指示**：充电灯是充电芯片直接驱动的独立 LED。
   - 实测纠错：P8 实为**低电平点亮**。按高电平亮写时，拔掉充电线后软件发“灭”灯反而亮了（`led_set_status: 0`），据此改板级 `BOARD_LED_ACTIVE_LV = LOW`。此前 idle 时 P8 其实一直是亮的
@@ -211,6 +213,24 @@ TDD_AUDIO_T5AI_T cfg = {
   - **语音查电量真机通过**（2026-10-18）：“你现在的电池电量是多少？”→ 服务器调用 `self.get_device_status` →“电量是满的喔，百分之百，而且还在充电中呢～”
 
 #### 电池 / MCP 实现要点（2026-10-18）
+
+2026-10-19 新增联网查询工具 `self.network.get_status`，无参数。可语音询问联网状况、所连热点、IP 地址和信号。返回 `status`、`connected`、`configured_ssid`、当前 `ssid`、`ip`、`gateway`、`rssi_dbm`、`signal`、`xiaozhi_connected` 和 `internet_status`；`self.get_device_status.network` 同步使用这一状态快照。
+
+连接状态区分未连接、连接中、密码错误、找不到热点、连接失败、正在获取 IP、已获取 IP 和 DHCP 失败；驱动读取失败或未知状态返回 `unknown` / `null`。断网后不读取可能残留的 IP/RSSI，配置热点名保留在 `configured_ssid`。信号分级沿用强（≥ -60 dBm）、中（≥ -70 dBm）、弱；读取失败或非负异常值返回 `null`。
+
+`internet_status=xiaozhi_reachable` 仅表示 Wi-Fi 已获取 IP 且当前小智 WebSocket 连接正常；仅连上 Wi-Fi 时返回 `unverified`，不能据此宣称外网可达。查询不扫描热点、不发探测请求、不改变重连和休眠计时。语音查询依赖小智连接，不能用于完全断网后的离线问答。原生回归通过实际 MCP JSON 请求验证工具发现、八种连接状态、失败与异常读数、SSID 转义、密码不出现在回复中以及设备状态兼容性；真机语音验收待完成。
+
+该版完整 `tos.py build` 编译、打包成功，原有 21 项功放/休眠回归与新增联网 MCP 回归全部通过。构建日志：`apps/xiaozhi_toy/.build/network_query_build.log`；QIO 固件：`apps/xiaozhi_toy/dist/xiaozhi_toy_0.1.0/xiaozhi_toy_QIO_0.1.0.bin`，2,931,008 字节，SHA-256：`99353030b888426a901cf56a5b4a7e53e15cc784a39ceec915337abfaf196d21`。
+
+已通过 COM10 分块烧录联网查询版本，390 个不一致扇区补写并逐一回读校验，326 个一致扇区保留；随后独立回读全部 2,931,008 字节，内容及 SHA-256 与构建产物一致，恢复原 Flash 保护状态并重启。日志 `apps/xiaozhi_toy/.build/network_query_flash.log`，回读 `apps/xiaozhi_toy/.build/network_query_flash_full_readback.bin`。启动日志 `apps/xiaozhi_toy/.build/network_query_boot.log` 已确认音频初始化、300 秒自动休眠配置、Wi-Fi 获取 IP、`state boot -> idle` 及 `ready`，且开机提示音有 `amplifier on` / `amplifier off` 配对记录。联网查询的实际语音调用仍待人工试用确认。
+
+后续新增公网 IPv4 查询：`self.network.get_public_ip`，无参数，语音示例「查询公网 IP」「外网 IP 是多少」。`xz_public_ip.c` 只在调用时 GET `https://api.ipify.org/`，协议见 [ipify 官方文档](https://www.ipify.org/)；启用证书和主机名验证，根证书来自 [Google Trust Services](https://pki.goog/repo/certs/gtsr4.pem)。主机已验证嵌入的 GTS Root R4 证书和 TLS 1.2 请求返回 HTTP 200，设备 TLS 配置也启用了 ECDSA / secp384r1。
+
+成功结果为 `public_ipv4` 及 `source`，表示设备经当前网络访问查询服务时的公网出口；不代表设备独占公网 IP，不提供 IPv6 或地理位置。配置 5000 ms 网络超时，要求 HTTP 200、响应体不超过 64 字节，并验证 IPv4 格式、排除常见私网/回环/链路本地/运营商 NAT 地址。失败通过 MCP `isError=true` 返回，不回退到内网地址或缓存；普通状态查询和待机没有额外请求。
+
+新增公网 IP 的 MCP 发现、成功查询、连续查询更新、离线、状态读取失败、传输失败、HTTP 503/302、非法 IP、私网、嵌入 NUL 和超长响应回归已通过，原有功放/休眠与联网状态回归也通过。完整编译打包成功，日志 `apps/xiaozhi_toy/.build/public_ip_build.log`。同名 QIO 产物现为 2,933,568 字节，SHA-256 `b0c79098b33895d5188c74a113cee730edc539e276fcd1939e2197ec0efbc43a`。以上联网状态版本的烧录和回读记录仍指其历史固件。
+
+公网 IP 版本已烧录。按用户要求跳过扇区及整份回读校验：在主机上与上版固件比较，保留 326 个未变扇区，391 个扇区写入完成并收到成功应答，保留镜像末扇区边界之外的数据，恢复原 Flash 保护状态。本次没有完整 Flash 回读文件，不能将产物 SHA-256 描述为设备校验结果。脚本与日志：`apps/xiaozhi_toy/.build/public_ip_write_only.py`、`public_ip_write_only.log`。`public_ip_boot.log` 已确认启动、音频初始化、Wi-Fi 获取 IP、`state boot -> idle`、`ready` 和提示音功放开关；公网 IP 的实际语音调用仍待人工试用。退出时已释放 RTS/DTR 并关闭 COM10，避免复位线持续有效；`tools/monitor.py` 的退出路径也显式释放这两条控制线。
 - `xz_battery.c`：每 10 s 取一次 `tdl_power_battery_get_voltage`（板级已做 16 次平均 + efuse 校准），**只在喇叭停播 2 s 后采样**（100% 音量时功放会把电池电压拉低，避免误判低电），最近 6 次（1 分钟）平均后查原厂 12 点 OCV 表线性插值。
 - 充电中端电压偏高（实测插着充电 4005 mV → 100%），电量照常上报但不做低电判断；P21 无“充满”信号。
 - 充电状态变化由 `tdl_power_charger_on_event` 回调（在 `pwr_chg` 线程里），投递到主线程事件队列。
@@ -221,7 +241,8 @@ TDD_AUDIO_T5AI_T cfg = {
 ### 阶段 4：电池、功耗
 - [x] SoftAP 配网（阶段 2 已完成）
 - [x] 电池：电量采样/平滑、低电播报、低电 LED、语音查询（见阶段 3）
-- [ ] 低功耗：空闲超时关功放（P19 拉低），P33 唤醒
+- [x] 低功耗代码：播放线程统一控制 P19；空闲 5 分钟进入深睡，充电中暂停计时，P33 唤醒；见 `low_power_standby.md`
+- [ ] 低功耗真机验收：尾音/爆音、充电边界、休眠电流与反复唤醒
 - [x] 音量记忆（KV `xz_vol`，语音设置后保存）
 
 ### 阶段 5：稳定性与调优

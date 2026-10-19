@@ -11,6 +11,7 @@
  *       listening = on, speaking = blinking.
  *       Charging is shown by a separate LED driven by the charger chip.
  * Charger plugged in / removed: "开始充电" / "充电器已拔出"
+ * Standby: PA off without playback; 5 minutes idle on battery -> deep sleep, P33 wakes.
  * Network: "网络连接失败" (cannot join at boot), "网络已断开" / "网络已恢复" (link lost / back)
  */
 
@@ -24,6 +25,7 @@
 #include "cJSON.h"
 #include "tdl_button_manage.h"
 #include "tuya_tls.h"
+#include "tal_wifi.h"
 #if defined(ENABLE_LIBLWIP) && (ENABLE_LIBLWIP == 1)
 #include "lwip_init.h"
 #endif
@@ -36,6 +38,7 @@
 #include "xz_mcp.h"
 #include "xz_ota.h"
 #include "xz_portal.h"
+#include "xz_power.h"
 #include "xz_settings.h"
 #include "xz_time.h"
 #include "xz_ui.h"
@@ -64,13 +67,15 @@ typedef enum {
     ST_BOOT,
     ST_PORTAL,
     ST_IDLE,
-    ST_OPENING,   /* websocket connected, waiting for the server hello */
+    ST_OPENING, /* websocket connected, waiting for the server hello */
     ST_LISTENING,
     ST_SPEAKING,
     ST_OFFLINE,
+    ST_SLEEPING,
 } APP_STATE_E;
 
-static const char *sg_state_name[] = {"boot", "portal", "idle", "opening", "listening", "speaking", "offline"};
+static const char *sg_state_name[] = {"boot",      "portal",   "idle",    "opening",
+                                      "listening", "speaking", "offline", "sleeping"};
 
 /***********************************************************
 ***********************variable define**********************
@@ -94,6 +99,9 @@ static char sg_auth[192];
 ***********************************************************/
 static void __post_event(APP_EV_E type, char *text)
 {
+    if (type == EV_KEY_TALK || type == EV_KEY_RESET_LONG || type == EV_WAKE_WORD) {
+        xz_power_activity(); /* cancel sleep even before the main thread handles the event */
+    }
     APP_EV_T ev = {.type = type, .text = text};
     if (OPRT_OK != tal_queue_post(sg_ev_queue, &ev, 0)) {
         tal_free(text);
@@ -120,6 +128,9 @@ static void __set_state(APP_STATE_E st)
     PR_NOTICE("state %s -> %s", sg_state_name[sg_state], sg_state_name[st]);
     sg_state = st;
     sg_state_since = tal_system_get_millisecond();
+    if (st == ST_IDLE || st == ST_OFFLINE) {
+        xz_power_activity();
+    }
 #if XZ_WAKE_ENABLE
     if (st != ST_IDLE) {
         xz_wake_enable(FALSE); /* in a conversation anything said goes to the server anyway */
@@ -127,6 +138,9 @@ static void __set_state(APP_STATE_E st)
 #endif
 
     switch (st) {
+    case ST_SLEEPING:
+        xz_ui_set(XZ_UI_OFF);
+        break;
     case ST_PORTAL:
         xz_ui_set(XZ_UI_PORTAL);
         break;
@@ -165,7 +179,9 @@ static void __reset_key_cb(char *name, TDL_BUTTON_TOUCH_EVENT_E event, void *arg
 {
     (void)name;
     (void)arg;
-    if (TDL_BUTTON_LONG_PRESS_START == event) {
+    if (TDL_BUTTON_PRESS_DOWN == event) {
+        xz_power_activity();
+    } else if (TDL_BUTTON_LONG_PRESS_START == event) {
         __post_event(EV_KEY_RESET_LONG, NULL);
     }
 }
@@ -191,6 +207,7 @@ static void __keys_init(void)
         tdl_button_event_register(talk, TDL_BUTTON_PRESS_DOWN, __talk_key_cb);
     }
     if (OPRT_OK == tdl_button_create(BUTTON_NAME_2, &cfg, &reset)) {
+        tdl_button_event_register(reset, TDL_BUTTON_PRESS_DOWN, __reset_key_cb);
         tdl_button_event_register(reset, TDL_BUTTON_LONG_PRESS_START, __reset_key_cb);
     }
 }
@@ -283,7 +300,7 @@ static void __sleep_events(uint32_t ms)
 
 static void __wifi_link_cb(BOOL_T up)
 {
-    if (!up && sg_state != ST_BOOT && sg_state != ST_PORTAL) {
+    if (!up && sg_state != ST_BOOT && sg_state != ST_PORTAL && sg_state != ST_SLEEPING) {
         __post_event(EV_WIFI_DOWN, NULL);
     }
 }
@@ -646,6 +663,34 @@ static void __battery_check(void)
     }
 }
 
+static BOOL_T __try_idle_sleep(void)
+{
+    if (!xz_power_should_sleep(sg_state == ST_IDLE || sg_state == ST_OFFLINE)) {
+        return FALSE;
+    }
+    __set_state(ST_SLEEPING); /* disarms KWS and ignores the intentional Wi-Fi shutdown */
+    xz_audio_capture(FALSE, NULL);
+    xz_ws_close();
+    OPERATE_RET rt = xz_audio_suspend();
+    if (OPRT_OK == rt) {
+        rt = tal_wifi_set_work_mode(WWM_POWERDOWN);
+    }
+    if (OPRT_OK == rt) {
+        rt = xz_power_enter_sleep(); /* no return on success */
+    }
+    PR_WARN("sleep cancelled or failed (%d), restoring standby", rt);
+    xz_power_defer();
+    if (OPRT_OK != xz_audio_resume()) {
+        PR_ERR("audio restore failed; rebooting");
+        tal_system_reset();
+        return TRUE;
+    }
+    /* If Wi-Fi was powered down, ST_OFFLINE owns reconnection. Queued key
+     * events are left intact and will be handled on the next main-loop turn. */
+    __set_state(xz_wifi_is_connected() ? ST_IDLE : ST_OFFLINE);
+    return TRUE;
+}
+
 static void __periodic(void)
 {
     SYS_TIME_T now = tal_system_get_millisecond();
@@ -653,6 +698,9 @@ static void __periodic(void)
     xz_battery_poll(xz_audio_is_playing());
     __charger_prompt();
     __battery_check();
+    if (__try_idle_sleep()) {
+        return;
+    }
 
     switch (sg_state) {
     case ST_IDLE:
@@ -720,9 +768,16 @@ static void __app_main(void)
 #if defined(ENABLE_LIBLWIP) && (ENABLE_LIBLWIP == 1)
     TUYA_LwIP_Init();
 #endif
+    if (OPRT_OK != board_audio_manual_pa_enable()) {
+        PR_ERR("cannot initialize speaker power control");
+        return;
+    }
     TUYA_CALL_ERR_LOG(board_register_hardware());
     xz_ui_init();
-    TUYA_CALL_ERR_LOG(xz_audio_init());
+    if (OPRT_OK != xz_audio_init()) {
+        PR_ERR("audio initialization failed; amplifier remains off");
+        return;
+    }
     xz_audio_set_volume((uint8_t)xz_settings_get_int(XZ_KEY_VOLUME, XZ_SPEAKER_VOLUME));
     if (OPRT_OK == xz_battery_init(NULL)) {
         XZ_BATTERY_T b;
@@ -735,6 +790,7 @@ static void __app_main(void)
     }
 #endif
     __keys_init();
+    TUYA_CALL_ERR_LOG(xz_power_init());
     TUYA_CALL_ERR_LOG(xz_wifi_init(__wifi_link_cb));
     PR_NOTICE("device %s, uuid %s, volume %u", xz_wifi_mac_str(), xz_settings_uuid(), xz_audio_get_volume());
 

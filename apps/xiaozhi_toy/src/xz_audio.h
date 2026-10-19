@@ -51,6 +51,11 @@ BOOL_T xz_audio_is_playing(void);
 /** Block until playback is idle or timeout. */
 void xz_audio_wait_idle(uint32_t timeout_ms);
 
+/** Quiesce the playback worker and close the codec before deep sleep. */
+OPERATE_RET xz_audio_suspend(void);
+/** Restore after a cancelled/failed sleep attempt; preserves the selected volume. */
+OPERATE_RET xz_audio_resume(void);
+
 #ifdef __cplusplus
 }
 #endif

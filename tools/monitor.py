@@ -68,9 +68,13 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
-        ser.close()
-        if logf:
-            logf.close()
+        try:
+            ser.rts = False  # leave CEN released when ending a debug session
+            ser.dtr = False
+        finally:
+            ser.close()
+            if logf:
+                logf.close()
 
 
 if __name__ == '__main__':

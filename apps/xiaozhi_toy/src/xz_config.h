@@ -27,14 +27,20 @@
 #define XZ_WAKE_ENABLE       1
 #define XZ_WAKE_WORD_TEXT    "小智同学"
 /* 1: tell the server which word woke the device ("listen detect"), it answers with a greeting.
- * 0: only play the popup sound and listen. */
-#define XZ_WAKE_SEND_DETECT  1
+ * 0: only play the popup sound and listen, without requesting a spoken greeting (default). */
+#define XZ_WAKE_SEND_DETECT  0
 
 /* ---- audio ---- */
 #define XZ_SAMPLE_RATE       16000
 #define XZ_OPUS_FRAME_MS     60
 #define XZ_OPUS_FRAME_SAMPLES (XZ_SAMPLE_RATE / 1000 * XZ_OPUS_FRAME_MS)
 #define XZ_SPEAKER_VOLUME    100 /* default; a volume set by voice is kept in KV */
+
+/* ---- amplifier and standby ---- */
+#define XZ_PA_START_MS    20U                /* settle before writing the first PCM frame */
+#define XZ_PA_TAIL_MS     200U               /* margin after the projected hardware drain */
+#define XZ_IDLE_SLEEP_MS  (5U * 60U * 1000U) /* 0 disables automatic sleep */
+#define XZ_SLEEP_RETRY_MS 60000U             /* preparation failures: retry at most once/minute */
 
 /* ---- battery (levels from the original firmware's OCV table) ---- */
 #define XZ_BAT_LOW_LEVEL      20  /* original firmware: "battery low, play alert" at <= 20 % */
